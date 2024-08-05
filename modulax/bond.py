@@ -25,21 +25,18 @@ class Bond(Module[None, None, jax.Array, jax.Array]):
     def regularize(self, key, state, params, strength):
         return None, None
 
-    def __call__(self, rng, x, params):
-        raise NotImplementedError
-
 
 class Identity(Bond):
     """Identity module."""
 
-    def __call__(self, rng, x, params):
-        return x
+    def __call__(self, rng, x, state, params):
+        return x, None
 
 
 class Flatten(Bond):
     """Flatten all non-batch dimensions."""
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jnp.reshape(x, (x.shape[0], -1)), None
 
 
@@ -50,7 +47,7 @@ class AddHeads(Bond):
         super().__init__()
         self.num_heads = num_heads
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         B, T, C = x.shape
         return (
             jnp.reshape(x, (B, T, self.num_heads, C // self.num_heads)).transpose(
@@ -63,7 +60,7 @@ class AddHeads(Bond):
 class RemoveHeads(Bond):
     """Inverse of AddHeads."""
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         B, nh, T, hs = x.shape
         return jnp.reshape(x.transpose(0, 2, 1, 3), (B, T, nh * hs)), None
 
@@ -71,14 +68,14 @@ class RemoveHeads(Bond):
 class Enumerate(Bond):
     """Replace each column with its column index. Used to make position embeddings."""
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jnp.arange(0, x.shape[1], dtype=jnp.int32), None
 
 
 class Abs(Bond):
     """Absolute value nonlinearity."""
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jnp.abs(x), None
 
 
@@ -89,7 +86,7 @@ class ReLU(Bond):
         super().__init__()
         self.sensitivity = 1 / math.sqrt(2)
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jax.nn.relu(x), None
 
 
@@ -105,7 +102,7 @@ class GELU(Bond):
         super().__init__()
         self.sensitivity = 1 / math.sqrt(2)
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jax.nn.gelu(x), None
 
 
@@ -121,7 +118,7 @@ class MeanSubtract(Bond):
         super().__init__()
         self.axis = axis
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return x - jnp.mean(x, axis=self.axis, keepdims=True), None
 
 
@@ -132,7 +129,7 @@ class RMSDivide(Bond):
         super().__init__()
         self.axis = axis
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return (
             x / jnp.sqrt(jnp.mean(jnp.square(x), axis=self.axis, keepdims=True)),
             None,
@@ -151,7 +148,7 @@ class Mean(Bond):
         super().__init__()
         self.axis = axis
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return jnp.mean(x, axis=self.axis), None
 
 
@@ -162,7 +159,7 @@ class AvgPool(Bond):
         super().__init__()
         self.output_size = output_size
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         return (
             jax.image.resize(x, x.shape[:2] + self.output_size, method="average"),
             None,
@@ -176,7 +173,7 @@ class FunctionalAttention(Bond):
         super().__init__()
         self.causal = causal
 
-    def __call__(self, rng, x, params):
+    def __call__(self, rng, x, state, params):
         q, k, v, kv_mask, pairwise_mask = x
         attn_weights = einx.dot("b h q d, b h k d -> b h q k", q, k) / jnp.sqrt(
             q.shape[-1]
