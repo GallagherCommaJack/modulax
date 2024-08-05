@@ -42,7 +42,7 @@ class Module(ABC, Generic[State, Params, X, Y]):
         self,
         key: jax.Array,
         state: State,
-        params: Params,
+        update: Params,
         target_norm: jax.Array,
     ) -> Tuple[State, Params]: ...
 
@@ -124,12 +124,12 @@ class CompositeModule(
         self,
         key: jax.Array,
         state: CompositeState,
-        params: CompositeParams,
+        update: CompositeParams,
         target_norm: jax.Array,
     ):
         if self.mass > 0:
             sf, sg = state
-            pf, pg = params
+            pf, pg = update
             kf, kg = jax.random.split(key)
             m0, m1 = self.children
             sf, pf = m0.normalize(
@@ -146,7 +146,7 @@ class CompositeModule(
             )
             return (sf, sg), (pf, pg)
         else:
-            return state, jax.tree.map(jnp.zeros_like, params)
+            return state, jax.tree.map(jnp.zeros_like, update)
 
     def regularize(
         self,
@@ -213,12 +213,12 @@ class TupleModule(
         self,
         key: jax.Array,
         state: CompositeState,
-        params: CompositeParams,
+        update: CompositeParams,
         target_norm: jax.Array,
     ):
         if self.mass > 0:
             sf, sg = state
-            pf, pg = params
+            pf, pg = update
             kf, kg = jax.random.split(key)
             mf, mg = self.children
             sf, pf = mf.normalize(
@@ -229,7 +229,7 @@ class TupleModule(
             )
             return (sf, sg), (pf, pg)
         else:
-            return state, jax.tree.map(jnp.zeros_like, params)
+            return state, jax.tree.map(jnp.zeros_like, update)
 
     def regularize(
         self,
@@ -275,7 +275,7 @@ class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, state, params, target_norm):
+    def normalize(self, key, state, update, target_norm):
         return None, None
 
     def regularize(self, key, state, params, strength):
@@ -296,7 +296,7 @@ class Add(Module[None, None, X, X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, state, params, target_norm):
+    def normalize(self, key, state, update, target_norm):
         return None, None
 
     def regularize(self, key, state, params, strength):
@@ -317,7 +317,7 @@ class Mul(Module[None, None, X, X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, state, params, target_norm):
+    def normalize(self, key, state, update, target_norm):
         return None, None
 
     def regularize(self, key, state, params, strength):
@@ -337,7 +337,7 @@ class Prod(Module[None, None, Tuple[X, ...], X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, state, params, target_norm):
+    def normalize(self, key, state, update, target_norm):
         return None, None
 
     def regularize(self, key, state, params, strength):
@@ -396,16 +396,16 @@ class Pow(Module[State, Params, X, Tuple[X, X]], Generic[State, Params, X]):
         self,
         key: jax.Array,
         state: State,
-        params: Params,
+        update: Params,
         target_norm: jax.Array,
     ) -> Tuple[State, Params]:
         if self.share_params:
-            return self.module.normalize(key, state, params, target_norm / self.depth)
+            return self.module.normalize(key, state, update, target_norm / self.depth)
         else:
             ks = jax.random.split(key, self.depth)
             ss, ps = jax.vmap(
                 lambda k, s, p: self.module.normalize(k, s, p, target_norm / self.depth)
-            )(ks, state, params)
+            )(ks, state, update)
             return ss, ps
 
     def __call__(
