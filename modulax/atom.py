@@ -167,7 +167,7 @@ class ShampooLinearState(TypedDict):
     r_inv: jax.Array
 
 
-class ShampooLinear(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
+class ShampooLinear(Module[ShampooLinearState, jax.Array, jax.Array, jax.Array]):
     def __init__(
         self,
         out_features,
