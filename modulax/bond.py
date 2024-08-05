@@ -252,8 +252,8 @@ class RotaryPositionEmbedding(Bond[Tuple[jax.Array, jax.Array], jax.Array]):
         self, rng: jax.Array, params: None, x: Tuple[jax.Array, jax.Array]
     ) -> jax.Array:
         embs, pos = x
-        *batch, n_head, seq_len, d_head = embs.shape
-        *_, seq_len, d_pos = pos.shape
+        *_, n_head, _, d_head = embs.shape
+        *_, _, d_pos = pos.shape
         d_model = n_head * d_head
         d_rot = int(d_model * self.rotate_frac)
         assert (
