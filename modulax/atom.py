@@ -1,5 +1,5 @@
 import math
-from typing import Tuple
+from typing import Tuple, TypedDict
 
 import jax
 import jax.numpy as jnp
@@ -28,8 +28,8 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
         self.length = 1
         self.scale = math.sqrt(out_channels / in_channels) / (kernel_size**2)
 
-    def init(self, rng: jax.Array):
-        k_w, k_u = jax.random.split(rng, 2)
+    def init(self, key: jax.Array):
+        k_w, k_u = jax.random.split(key, 2)
         weight = jax.nn.initializers.delta_orthogonal()(
             k_w,
             (self.kernel_size, self.kernel_size, self.out_channels, self.in_channels),
@@ -44,6 +44,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
             ),
             dtype=jnp.float32,
         )
+        return u, weight
 
     def __call__(self, rng: jax.Array, x: jax.Array, params: jax.Array):
         return jax.lax.conv_general_dilated(
@@ -61,33 +62,16 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
 
     def normalize(
         self,
-        rng: jax.Array,
         state: jax.Array,
         update: jax.Array,
-        target_norm: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
         weight = update
         u = state
         v = jnp.einsum("hwi,hwoi->hwo", u, weight)
         v /= jnp.linalg.norm(v, axis=-1, keepdims=True)
         u = jnp.einsum("hwo,hwoi->hwi", v, weight)
-        weight *= target_norm / jnp.linalg.norm(u, axis=-1, keepdims=True)
+        weight /= jnp.linalg.norm(u, axis=-1, keepdims=True)
         return u, weight
-
-    def regularize(
-        self,
-        rng: jax.Array,
-        state: jax.Array,
-        params: jax.Array,
-        strength: jax.Array,
-    ):
-        params = params * (1 - strength)
-        return state, params
-
-    def print_submodules(self):
-        print(
-            f"Conv2D module of shape {(self.kernel_size, self.kernel_size, self.out_channels, self.in_channels)} and mass {self.mass}."
-        )
 
 
 class Linear(Module[jax.Array, jax.Array, jax.Array]):
@@ -114,8 +98,8 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
             preferred_element_type=x.dtype,
         )
 
-    def init(self, rng: jax.Array):
-        k_w, k_u = jax.random.split(rng, 2)
+    def init(self, key: jax.Array):
+        k_w, k_u = jax.random.split(key, 2)
         weight = jax.nn.initializers.orthogonal(column_axis=0)(
             k_w,
             (self.out_features, self.in_features),
@@ -127,33 +111,16 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
 
     def normalize(
         self,
-        rng: jax.Array,
         state: jax.Array,
         update: jax.Array,
-        target_norm: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
         weight = update
         u = state
         v = jnp.einsum("i,oi->o", u, weight)
         v /= jnp.linalg.norm(v)
         u = jnp.einsum("o,oi->i", v, weight)
-        weight *= target_norm / jnp.linalg.norm(u)
+        weight /= jnp.linalg.norm(u)
         return u, weight
-
-    def regularize(
-        self,
-        rng: jax.Array,
-        state: jax.Array,
-        params: jax.Array,
-        strength: jax.Array,
-    ):
-        params = params * (1 - strength)
-        return state, params
-
-    def print_submodules(self):
-        print(
-            f"Linear module of shape {(self.out_features, self.in_features)} and mass {self.mass}."
-        )
 
 
 class ShampooLinearState(TypedDict):
@@ -184,7 +151,6 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
 
     def __call__(
         self,
-        rng: jax.Array,
         x: jax.Array,
         params: jax.Array,
     ) -> jax.Array:
@@ -195,9 +161,9 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             preferred_element_type=x.dtype,
         )
 
-    def init(self, rng: jax.Array):
+    def init(self, key: jax.Array):
         weight = jax.nn.initializers.orthogonal(column_axis=0)(
-            rng,
+            key,
             (self.out_features, self.in_features),
             dtype=jnp.float32,
         )
@@ -220,10 +186,8 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
 
     def normalize(
         self,
-        rng: jax.Array,
         state: ShampooLinearState,
         update: jax.Array,
-        target_norm: jax.Array,
     ) -> Tuple[ShampooLinearState, jax.Array]:
         r = state["l"] + update @ update.T  # oo
         l = state["r"] + update.T @ update  # ii
@@ -238,7 +202,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             jnp.linalg.matrix_power(r, -1 / 4),
             state["l_inv"],
         )
-        update = target_norm * r_inv @ update @ l_inv
+        update = r_inv @ update @ l_inv
         return {
             "i": i + 1,
             "l": l,
@@ -246,18 +210,3 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             "r": r,
             "r_inv": r_inv,
         }, update
-
-    def regularize(
-        self,
-        rng: jax.Array,
-        state: ShampooLinearState,
-        params: jax.Array,
-        strength: jax.Array,
-    ):
-        params = params * (1 - strength)
-        return state, params
-
-    def print_submodules(self):
-        print(
-            f"Linear module of shape {(self.out_features, self.in_features)} and mass {self.mass}."
-        )

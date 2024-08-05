@@ -1,4 +1,7 @@
 from abc import ABC, abstractmethod
+import optax
+import functools as ft
+import numpy as np
 from typing import Generic, List, Tuple, TypeVar
 
 import jax
@@ -28,23 +31,71 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
     @abstractmethod
     def init(self, key: jax.Array) -> Tuple[OptState, Params]: ...
 
-    @abstractmethod
-    def regularize(
+    def scale_updates(
         self,
-        key: jax.Array,
-        opt_state: OptState,
-        params: Params,
-        strength: jax.Array,
-    ) -> Tuple[OptState, Params]: ...
-
-    @abstractmethod
-    def normalize(
-        self,
-        key: jax.Array,
         opt_state: OptState,
         update: Params,
-        target_norm: jax.Array,
-    ) -> Tuple[OptState, Params]: ...
+        target_norm: jax.typing.ArrayLike,
+    ) -> Tuple[OptState, Params]:
+        return opt_state, update
+
+    def regularize(
+        self,
+        opt_state: OptState,
+        params: Params,
+    ) -> Tuple[OptState, Params]:
+        # default to weight decay
+        return opt_state, params
+
+    def normalize(
+        self,
+        opt_state: OptState,
+        update: Params,
+    ) -> Tuple[OptState, Params]:
+        return opt_state, update
+
+    def optax_update_fn(
+        self,
+        reg_strength: jax.typing.ArrayLike = 0.0,
+        target_norm: jax.typing.ArrayLike = 1.0,
+        flip_sign: bool = True,
+    ) -> optax.TransformUpdateFn:
+        def update_fn(update, opt_state, params=None):
+            opt_state, update = self.normalize(opt_state, update)
+            if params is not None and reg_strength > 0:
+                opt_state, reg_update = self.regularize(opt_state, params)
+                update = jax.tree.map(
+                    lambda u, r: u + reg_strength * r, update, reg_update
+                )
+            opt_state, update = self.update_scale(
+                opt_state,
+                params,
+                update,
+                target_norm=target_norm,
+            )
+            if flip_sign:
+                update = jax.tree.map(lambda u: -u, update)
+            return update, opt_state
+
+        return update_fn
+
+    def apply_update(
+        self,
+        opt_state: OptState,
+        params: Params,
+        update: Params,
+        reg_strength: jax.typing.ArrayLike = 0.0,
+        target_norm: jax.typing.ArrayLike = 1.0,
+    ) -> Tuple[OptState, Params]:
+        update, opt_state = self.optax_update_fn(
+            reg_strength, target_norm, flip_sign=False
+        )(update, opt_state, params)
+        params = jax.tree.map(
+            lambda p, u: jnp.asarray(p - u, dtype=p.dtype),
+            params,
+            update,
+        )
+        return opt_state, params
 
     @abstractmethod
     def __call__(self, rng: jax.Array, x: X, params: Params) -> Y: ...
@@ -92,50 +143,6 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
         return Pow(other, self)
 
 
-class SimpleModule(Module[None, Params, X, Y], Generic[Params, X, Y]):
-    """A module with no internal optimizer state."""
-
-    @abstractmethod
-    def simple_init(self, key: jax.Array) -> Params: ...
-
-    def init(self, key: jax.Array) -> Tuple[None, Params]:
-        return None, self.simple_init(key)
-
-    @abstractmethod
-    def simple_regularize(
-        self,
-        key: jax.Array,
-        params: Params,
-        strength: jax.Array,
-    ) -> Params: ...
-
-    def regularize(
-        self,
-        key: jax.Array,
-        opt_state: None,
-        params: Params,
-        strength: jax.Array,
-    ) -> Tuple[None, Params]:
-        return None, self.simple_regularize(key, params, strength)
-
-    @abstractmethod
-    def simple_normalize(
-        self,
-        key: jax.Array,
-        params: Params,
-        target_norm: jax.Array,
-    ) -> Params: ...
-
-    def normalize(
-        self,
-        key: jax.Array,
-        opt_state: None,
-        update: Params,
-        target_norm: jax.Array,
-    ) -> Tuple[None, Params]:
-        return None, self.simple_normalize(key, update, target_norm)
-
-
 class CompositeModule(
     Module[CompositeOptState, CompositeParams, X, Z],
     Generic[OptStateF, OptStateG, ParamsF, ParamsG, X, Y, Z],
@@ -158,59 +165,50 @@ class CompositeModule(
         ss, ps = zip(*sps)
         return ss, ps
 
-    def normalize(
+    def scale_updates(
         self,
-        key: jax.Array,
         opt_state: CompositeOptState,
         update: CompositeParams,
         target_norm: jax.Array,
-    ):
+    ) -> Tuple[CompositeOptState, CompositeParams]:
+        sf, sg = opt_state
+        uf, ug = update
+        f, g = self.children
+
         if self.mass > 0:
-            ks = jax.random.split(key, len(self.children))
-            ss, us = []
-            sensitivity = 1.0
-            for child, k, opt_state, update in zip(
-                self.children, ks, opt_state, update
-            ):
-                s, u = child.normalize(
-                    k,
-                    opt_state,
-                    update,
-                    child.mass / self.mass * target_norm / sensitivity,
-                )
-                sensitivity *= child.sensitivity
-                ss.append(s)
-                us.append(u)
-            opt_state = tuple(ss)
-            update = tuple(us)
-        else:
-            update = jax.tree.map(jnp.zeros_like, update)
-        return opt_state, update
+            sf, scale_f = f.scale_updates(
+                sf,
+                uf,
+                target_norm=target_norm * f.mass / self.mass / g.sensitivity,
+            )
+            sg, scale_g = g.scale_updates(
+                sg, ug, target_norm=target_norm * g.mass / self.mass
+            )
+        return (sf, sg), (scale_f, scale_g)
+
+    def normalize(
+        self,
+        opt_state: CompositeOptState,
+        update: CompositeParams,
+    ) -> Tuple[CompositeOptState, CompositeParams]:
+        sf, sg = opt_state
+        uf, ug = update
+        f, g = self.children
+        sf, uf = f.normalize(sf, uf)
+        sg, ug = g.normalize(sg, ug)
+        return (sf, sg), (uf, ug)
 
     def regularize(
         self,
-        key: jax.Array,
         opt_state: CompositeOptState,
         params: CompositeParams,
-        strength: jax.Array,
     ) -> Tuple[CompositeOptState, CompositeParams]:
-        if self.mass > 0:
-            ks = jax.random.split(key, len(self.children))
-            ss, ps = []
-            sensitivity = 1.0
-            for child, k, s, p in zip(self.children, ks, opt_state, params):
-                s, p = child.regularize(
-                    k,
-                    s,
-                    p,
-                    child.mass / self.mass * strength / sensitivity,
-                )
-                sensitivity *= child.sensitivity
-                ss.append(s)
-                ps.append(p)
-            opt_state = tuple(ss)
-            params = tuple(ps)
-        return opt_state, params
+        sf, sg = opt_state
+        uf, ug = params
+        f, g = self.children
+        sf, uf = f.regularize(sf, uf)
+        sg, ug = g.regularize(sg, ug)
+        return (sf, sg), (uf, ug)
 
     def __call__(
         self,
@@ -235,7 +233,7 @@ class TupleModule(
         g: Module[OptStateG, ParamsG, X, Z],
     ):
         self.mass = f.mass + g.mass
-        self.sensitivity = f.sensitivity * g.sensitivity
+        self.sensitivity = f.sensitivity + g.sensitivity
         self.length = f.length + g.length
         self.children = [f, g]
 
@@ -245,57 +243,62 @@ class TupleModule(
         sg, pg = self.children[1].init(kg)
         return (sf, sg), (pf, pg)
 
-    def normalize(
+    def scale_updates(
         self,
-        key: jax.Array,
         opt_state: CompositeOptState,
         update: CompositeParams,
         target_norm: jax.Array,
+    ) -> Tuple[CompositeOptState, CompositeParams]:
+        sf, sg = opt_state
+        uf, ug = update
+        mf, mg = self.children
+        sf, uf = mf.scale_updates(
+            sf,
+            uf,
+            target_norm=target_norm * mf.mass / self.mass,
+        )
+        sg, ug = mg.scale_updates(
+            sg,
+            ug,
+            target_norm=target_norm * mg.mass / self.mass,
+        )
+        return (sf, sg), (uf, ug)
+
+    def normalize(
+        self,
+        opt_state: CompositeOptState,
+        update: CompositeParams,
     ):
-        if self.mass > 0:
-            sf, sg = opt_state
-            pf, pg = update
-            kf, kg = jax.random.split(key)
-            mf, mg = self.children
-            sf, pf = mf.normalize(
-                kf, sf, pf, target_norm=target_norm * mf.mass / self.mass
-            )
-            sg, pg = mg.normalize(
-                kg, sg, pg, target_norm=target_norm * mg.mass / self.mass
-            )
-            return (sf, sg), (pf, pg)
-        else:
-            return opt_state, jax.tree.map(jnp.zeros_like, update)
+        sf, sg = opt_state
+        uf, ug = update
+        f, g = self.children
+        sf, uf = f.normalize(sf, uf)
+        sg, ug = g.normalize(sg, ug)
+        return (sf, sg), (uf, ug)
 
     def regularize(
         self,
-        key: jax.Array,
         opt_state: CompositeOptState,
         params: CompositeParams,
-        strength: jax.Array,
     ) -> Tuple[CompositeOptState, CompositeParams]:
-        if self.mass > 0:
-            kf, kg = jax.random.split(key)
-            sf, sg = opt_state
-            pf, pg = params
-            mf, mg = self.children
-            sf, pf = mf.regularize(kf, sf, pf, strength=strength * mf.mass / self.mass)
-            sg, pg = mg.regularize(kg, sg, pg, strength=strength * mg.mass / self.mass)
-            return (sf, sg), (pf, pg)
-        else:
-            return opt_state, params
+        sf, sg = opt_state
+        uf, ug = params
+        f, g = self.children
+        sf, uf = f.regularize(sf, uf)
+        sg, ug = g.regularize(sg, ug)
+        return (sf, sg), (uf, ug)
 
     def __call__(
         self,
         rng: jax.Array,
         x: X,
         params: CompositeParams,
-    ) -> Tuple[Tuple[Y, Z], CompositeOptState]:
+    ) -> Tuple[Y, Z]:
         pf, pg = params
         rf, rg = jax.random.split(rng)
         y = self.children[0](rf, x, pf)
         z = self.children[1](rg, x, pg)
-        return (y, z), None
+        return y, z
 
 
 class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
@@ -307,12 +310,6 @@ class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
         self.children = []
 
     def init(self, key):
-        return None, None
-
-    def normalize(self, key, opt_state, update, target_norm):
-        return None, None
-
-    def regularize(self, key, opt_state, params, strength):
         return None, None
 
     def __call__(self, rng, x: Tuple[X, ...], params):
@@ -330,12 +327,6 @@ class Add(Module[None, None, X, X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, opt_state, update, target_norm):
-        return None, None
-
-    def regularize(self, key, opt_state, params, strength):
-        return None, None
-
     def __call__(self, rng, x: X, params):
         return jax.tree.map(lambda x: self.alpha + x, x)
 
@@ -351,12 +342,6 @@ class Mul(Module[None, None, X, X], Generic[X]):
     def init(self, key):
         return None, None
 
-    def normalize(self, key, opt_state, update, target_norm):
-        return None, None
-
-    def regularize(self, key, opt_state, params, strength):
-        return None, None
-
     def __call__(self, rng, x: X, params):
         return jax.tree.map(lambda x: self.alpha * x, x)
 
@@ -369,12 +354,6 @@ class Prod(Module[None, None, Tuple[X, ...], X], Generic[X]):
         self.children = []
 
     def init(self, key):
-        return None, None
-
-    def normalize(self, key, opt_state, update, target_norm):
-        return None, None
-
-    def regularize(self, key, opt_state, params, strength):
         return None, None
 
     def __call__(self, rng, x: Tuple[X, ...], params):
@@ -393,7 +372,6 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
         reverse: bool = False,
         unroll: int = 1,
         _split_transpose: bool = False,
-        share_params: bool = False,
     ):
         self.depth = depth
         self.module = module
@@ -410,51 +388,36 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
         ss, ps = jax.vmap(self.module.init)(ks)
         return ss, ps
 
-    def regularize(
+    def scale_updates(
         self,
-        key: jax.Array,
-        opt_state: OptState,
-        params: Params,
-        strength: jax.Array,
-    ) -> Tuple[OptState, Params]:
-        ks = jax.random.split(key, self.depth)
-
-        def scan_body(strength, spk):
-            k, s, p = spk
-            s, p = self.module.regularize(k, s, p, strength / self.depth)
-            return strength / self.module.sensitivity, (s, p)
-
-        _, (ss, ps) = jax.lax.scan(
-            scan_body,
-            jnp.asarray(strength, dtype=jnp.float32),
-            (ks, opt_state, params),
-            self.depth,
-            reverse=not self.reverse,
-        )
-        return ss, ps
-
-    def normalize(
-        self,
-        key: jax.Array,
         opt_state: OptState,
         update: Params,
         target_norm: jax.Array,
     ) -> Tuple[OptState, Params]:
-        ks = jax.random.split(key, self.depth)
-
-        def scan_body(target_norm, spk):
-            k, s, p = spk
-            s, p = self.module.normalize(k, s, p, target_norm / self.depth)
-            return target_norm / self.module.sensitivity, (s, p)
-
-        _, (ss, ps) = jax.lax.scan(
-            scan_body,
-            jnp.asarray(target_norm, dtype=jnp.float32),
-            (ks, opt_state, update),
-            self.depth,
-            reverse=not self.reverse,
+        target_norms = np.array(
+            [
+                target_norm / self.module.sensitivity**i / self.depth
+                for i in reversed(range(self.depth))
+            ]
         )
-        return ss, ps
+        opt_state, update = jax.vmap(self.module.scale_updates)(
+            opt_state, update, target_norms
+        )
+        return opt_state, update
+
+    def regularize(
+        self,
+        opt_state: OptState,
+        params: Params,
+    ) -> Tuple[OptState, Params]:
+        return jax.vmap(self.module.regularize)(opt_state, params)
+
+    def normalize(
+        self,
+        opt_state: OptState,
+        update: Params,
+    ) -> Tuple[OptState, Params]:
+        return jax.vmap(self.module.normalize)(opt_state, update)
 
     def __call__(
         self,
