@@ -28,14 +28,9 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
         self.length = 1
         self.scale = math.sqrt(out_channels / in_channels) / (kernel_size**2)
 
-    def init(self, key: jax.Array):
-        k_w, k_u = jax.random.split(key, 2)
-        weight = jax.nn.initializers.delta_orthogonal()(
-            k_w,
-            (self.kernel_size, self.kernel_size, self.out_channels, self.in_channels),
-            dtype=jnp.float32,
-        )
-        u = jax.random.normal(
+    def init_opt_state(self, key: jax.Array, params: jax.Array) -> jax.Array:
+        k_u = jax.random.split(key)[1]
+        return jax.random.normal(
             k_u,
             (
                 self.kernel_size,
@@ -44,7 +39,14 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
             ),
             dtype=jnp.float32,
         )
-        return u, weight
+
+    def init_params(self, key: jax.Array) -> jax.Array:
+        k_w = jax.random.split(key)[0]
+        return jax.nn.initializers.delta_orthogonal()(
+            k_w,
+            (self.kernel_size, self.kernel_size, self.out_channels, self.in_channels),
+            dtype=jnp.float32,
+        )
 
     def __call__(self, rng: jax.Array, x: jax.Array, params: jax.Array):
         return jax.lax.conv_general_dilated(
@@ -85,6 +87,18 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
         self.scale = math.sqrt(out_features / in_features)
         self.children = []
 
+    def init_opt_state(self, key: jax.Array, params: jax.Array) -> jax.Array:
+        k_u = jax.random.split(key)[1]
+        return jax.random.normal(k_u, (self.in_features,), dtype=jnp.float32)
+
+    def init_params(self, key: jax.Array) -> jax.Array:
+        k_w = jax.random.split(key)[0]
+        return jax.nn.initializers.orthogonal(column_axis=0)(
+            k_w,
+            (self.out_features, self.in_features),
+            dtype=jnp.float32,
+        )
+
     def __call__(
         self,
         rng: jax.Array,
@@ -97,17 +111,6 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
             params,
             preferred_element_type=x.dtype,
         )
-
-    def init(self, key: jax.Array):
-        k_w, k_u = jax.random.split(key, 2)
-        weight = jax.nn.initializers.orthogonal(column_axis=0)(
-            k_w,
-            (self.out_features, self.in_features),
-            dtype=jnp.float32,
-        )
-        u = jax.random.normal(k_u, (self.in_features,), dtype=jnp.float32)
-
-        return u, weight
 
     def normalize(
         self,
@@ -149,6 +152,22 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         self.update_preconditioner = update_preconditioner
         self.children = []
 
+    def init_opt_state(self, key: jax.Array, params: jax.Array) -> ShampooLinearState:
+        return {
+            "i": jnp.zeros((), dtype=jnp.uint32),
+            "l": jnp.eye(self.out_features),
+            "l_inv": jnp.eye(self.out_features),
+            "r": jnp.eye(self.in_features),
+            "r_inv": jnp.eye(self.in_features),
+        }
+
+    def init_params(self, key: jax.Array) -> jax.Array:
+        return jax.nn.initializers.orthogonal(column_axis=0)(
+            key,
+            (self.out_features, self.in_features),
+            dtype=jnp.float32,
+        )
+
     def __call__(
         self,
         x: jax.Array,
@@ -160,29 +179,6 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             params,
             preferred_element_type=x.dtype,
         )
-
-    def init(self, key: jax.Array):
-        weight = jax.nn.initializers.orthogonal(column_axis=0)(
-            key,
-            (self.out_features, self.in_features),
-            dtype=jnp.float32,
-        )
-        l = jnp.eye(self.out_features)
-        l_inv = jnp.eye(self.out_features)
-        r = jnp.eye(self.in_features)
-        r_inv = jnp.eye(self.in_features)
-        i = jnp.zeros(
-            (),
-            dtype=jnp.uint32,
-        )
-
-        return {
-            "i": i,
-            "l": l,
-            "l_inv": l_inv,
-            "r": r,
-            "r_inv": r_inv,
-        }, weight
 
     def normalize(
         self,

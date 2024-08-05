@@ -1,4 +1,5 @@
 import math
+from typing import Tuple
 import einx
 import jax
 import jax.numpy as jnp
@@ -16,13 +17,16 @@ class Bond(Module[None, None, jax.Array, jax.Array]):
         self.length = 0
         self.children = []
 
-    def init(self, key: jax.Array):
+    def init_opt_state(self, key: jax.Array, params: None) -> None:
+        return None
+
+    def init_params(self, key: jax.Array) -> None:
+        return None
+
+    def normalize(self, update: None, state: None) -> Tuple[None, None]:
         return None, None
 
-    def normalize(self, key, state, update, target_norm):
-        return None, None
-
-    def regularize(self, key, state, params, strength):
+    def regularize(self, params: None, state: None) -> Tuple[None, None]:
         return None, None
 
 

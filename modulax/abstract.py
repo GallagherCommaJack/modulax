@@ -29,7 +29,10 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
     children: List["Module"]
 
     @abstractmethod
-    def init(self, key: jax.Array) -> Tuple[OptState, Params]: ...
+    def init_opt_state(self, key: jax.Array, params: Params) -> OptState: ...
+
+    @abstractmethod
+    def init_params(self, key: jax.Array) -> Params: ...
 
     def scale_updates(
         self,
@@ -159,11 +162,13 @@ class CompositeModule(
         self.length = f.length + g.length
         self.children = [f, g]
 
-    def init(self, key: jax.Array) -> Tuple[CompositeOptState, CompositeParams]:
+    def init_opt_state(self, key: jax.Array, params: CompositeParams) -> CompositeOptState:
         ks = jax.random.split(key, len(self.children))
-        sps = [child.init(k) for child, k in zip(self.children, ks)]
-        ss, ps = zip(*sps)
-        return ss, ps
+        return tuple(child.init_opt_state(k, p) for child, k, p in zip(self.children, ks, params))
+
+    def init_params(self, key: jax.Array) -> CompositeParams:
+        ks = jax.random.split(key, len(self.children))
+        return tuple(child.init_params(k) for child, k in zip(self.children, ks))
 
     def scale_updates(
         self,
@@ -237,11 +242,18 @@ class TupleModule(
         self.length = f.length + g.length
         self.children = [f, g]
 
-    def init(self, key: jax.Array) -> Tuple[CompositeOptState, CompositeParams]:
+    def init_opt_state(self, key: jax.Array, params: CompositeParams) -> CompositeOptState:
         kf, kg = jax.random.split(key)
-        sf, pf = self.children[0].init(kf)
-        sg, pg = self.children[1].init(kg)
-        return (sf, sg), (pf, pg)
+        pf, pg = params
+        sf = self.children[0].init_opt_state(kf, pf)
+        sg = self.children[1].init_opt_state(kg, pg)
+        return (sf, sg)
+
+    def init_params(self, key: jax.Array) -> CompositeParams:
+        kf, kg = jax.random.split(key)
+        pf = self.children[0].init_params(kf)
+        pg = self.children[1].init_params(kg)
+        return (pf, pg)
 
     def scale_updates(
         self,
@@ -309,8 +321,11 @@ class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
         self.length = 0
         self.children = []
 
-    def init(self, key):
-        return None, None
+    def init_opt_state(self, key, params):
+        return None
+
+    def init_params(self, key):
+        return None
 
     def __call__(self, rng, x: Tuple[X, ...], params):
         return sum(x)
@@ -324,8 +339,11 @@ class Add(Module[None, None, X, X], Generic[X]):
         self.length = 0
         self.children = []
 
-    def init(self, key):
-        return None, None
+    def init_opt_state(self, key, params):
+        return None
+
+    def init_params(self, key):
+        return None
 
     def __call__(self, rng, x: X, params):
         return jax.tree.map(lambda x: self.alpha + x, x)
@@ -339,8 +357,11 @@ class Mul(Module[None, None, X, X], Generic[X]):
         self.length = 0
         self.children = []
 
-    def init(self, key):
-        return None, None
+    def init_opt_state(self, key, params):
+        return None
+
+    def init_params(self, key):
+        return None
 
     def __call__(self, rng, x: X, params):
         return jax.tree.map(lambda x: self.alpha * x, x)
@@ -353,8 +374,11 @@ class Prod(Module[None, None, Tuple[X, ...], X], Generic[X]):
         self.length = 0
         self.children = []
 
-    def init(self, key):
-        return None, None
+    def init_opt_state(self, key, params):
+        return None
+
+    def init_params(self, key):
+        return None
 
     def __call__(self, rng, x: Tuple[X, ...], params):
         assert len(x) > 0
@@ -383,10 +407,13 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
         self.unroll = unroll
         self._split_transpose = _split_transpose
 
-    def init(self, key: jax.Array) -> Tuple[OptState, Params]:
+    def init_opt_state(self, key: jax.Array, params: Params) -> OptState:
         ks = jax.random.split(key, self.depth)
-        ss, ps = jax.vmap(self.module.init)(ks)
-        return ss, ps
+        return jax.vmap(self.module.init_opt_state)(ks, params)
+
+    def init_params(self, key: jax.Array) -> Params:
+        ks = jax.random.split(key, self.depth)
+        return jax.vmap(self.module.init_params)(ks)
 
     def scale_updates(
         self,
