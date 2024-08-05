@@ -141,6 +141,8 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         in_features,
         mass=1,
         update_preconditioner: int = 10,
+        update_inv: int = 100,
+        beta: float = 0.9,
     ):
         super().__init__()
         self.mass = mass
@@ -150,6 +152,8 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         self.in_features = in_features
         self.scale = math.sqrt(out_features / in_features)
         self.update_preconditioner = update_preconditioner
+        self.update_inv = update_inv
+        self.beta = beta
         self.children = []
 
     def init_opt_state(self, key: jax.Array, params: jax.Array) -> ShampooLinearState:
@@ -186,16 +190,24 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         update: jax.Array,
         state: ShampooLinearState,
     ) -> Tuple[jax.Array, ShampooLinearState]:
-        r = state["l"] + update @ update.T  # oo
-        l = state["r"] + update.T @ update  # ii
         i = state["i"]
-        l_inv = jax.lax.cond(
+        l = jax.lax.cond(
             i % self.update_preconditioner == 0,
+            state["l"] * self.beta + update @ update.T * (1 - self.beta),
+            state["l"],
+        )
+        l_inv = jax.lax.cond(
+            i % self.update_inv == 0,
             jnp.linalg.matrix_power(l, -1 / 4),
             state["r_inv"],
         )
-        r_inv = jax.lax.cond(
+        r = jax.lax.cond(
             i % self.update_preconditioner == 0,
+            state["r"] * self.beta + update.T @ update * (1 - self.beta),
+            state["r"],
+        )
+        r_inv = jax.lax.cond(
+            i % self.update_inv == 0,
             jnp.linalg.matrix_power(r, -1 / 4),
             state["l_inv"],
         )
