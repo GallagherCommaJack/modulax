@@ -197,3 +197,33 @@ class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
 
         attn_weights = einx.softmax("b h q [k]", attn_weights)
         return einx.dot("b h q k,b h k d->b h q d", attn_weights, v)
+
+
+class FourierFeatures(Bond[jax.Array, Tuple[jax.Array, jax.Array]]):
+    def __init__(self, d_out: int, min_wavelength: float, max_wavelength: float):
+        assert min_wavelength > 0, f"{min_wavelength=} must be positive"
+        assert max_wavelength > 0, f"{max_wavelength=} must be positive"
+        super().__init__()
+        self.d_out: int = d_out
+        self.min_wavelength: float = min_wavelength
+        self.max_wavelength: float = max_wavelength
+
+    def __call__(
+        self, rng: jax.Array, params: None, x: jax.Array
+    ) -> Tuple[jax.Array, jax.Array]:
+        d_in = x.shape[-1]
+        assert self.d_out % d_in == 0, f"{self.d_out=} must be divisible by {d_in=}"
+        assert (
+            self.d_out // d_in
+        ) % 2 == 0, f"{self.d_out=} must be an even multiple of {d_in=}"
+        num_bands = self.d_out // d_in
+        num_freqs = num_bands // 2
+        freqs = jnp.exp(
+            jnp.linspace(
+                jnp.log(self.min_wavelength),
+                jnp.log(self.max_wavelength),
+                num_freqs,
+            )
+        )
+        y = einx.multiply("b ... d, f -> b ... (d f)", x, freqs)
+        return jnp.sin(y), jnp.cos(y)
