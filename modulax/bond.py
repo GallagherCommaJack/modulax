@@ -1,13 +1,22 @@
 import math
-from typing import Tuple, Optional
+from typing import Generic, NamedTuple, Optional, Tuple
+
 import einx
 import jax
 import jax.numpy as jnp
 
-from .abstract import Module
+from .abstract import Module, X, Y
 
 
-class Bond(Module[None, None, jax.Array, jax.Array]):
+class AttentionInputs(NamedTuple):
+    q: jax.Array
+    k: jax.Array
+    v: jax.Array
+    kv_mask: Optional[jax.Array] = None
+    pairwise_mask: Optional[jax.Array] = None
+
+
+class Bond(Module[None, None, X, Y], Generic[X, Y]):
     """A module with no weights."""
 
     def __init__(self):
@@ -33,21 +42,21 @@ class Bond(Module[None, None, jax.Array, jax.Array]):
         return x
 
 
-class Identity(Bond):
+class Identity(Bond[X, X], Generic[X]):
     """Identity module."""
 
-    def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
+    def __call__(self, rng: jax.Array, params: None, x: X) -> X:
         return x
 
 
-class Flatten(Bond):
+class Flatten(Bond[jax.Array, jax.Array]):
     """Flatten all non-batch dimensions."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
-        return jnp.reshape(x, (x.shape[0], -1))
+        return einx.rearrange("b ... -> b (...)", x)
 
 
-class AddHeads(Bond):
+class AddHeads(Bond[jax.Array, jax.Array]):
     """Reshapes an input to have heads."""
 
     def __init__(self, num_heads: int):
@@ -55,33 +64,24 @@ class AddHeads(Bond):
         self.num_heads: int = num_heads
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
-        B, T, C = x.shape
-        return jnp.reshape(x, (B, T, self.num_heads, C // self.num_heads)).transpose(0, 2, 1, 3)
+        return einx.rearrange("b t (h d) -> b h t d", x, h=self.num_heads)
 
 
-class RemoveHeads(Bond):
+class RemoveHeads(Bond[jax.Array, jax.Array]):
     """Inverse of AddHeads."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
-        B, nh, T, hs = x.shape
-        return jnp.reshape(x.transpose(0, 2, 1, 3), (B, T, nh * hs))
+        return einx.rearrange("b h t d -> b t (h d)", x)
 
 
-class Enumerate(Bond):
-    """Replace each column with its column index. Used to make position embeddings."""
-
-    def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
-        return jnp.arange(0, x.shape[1], dtype=jnp.int32)
-
-
-class Abs(Bond):
+class Abs(Bond[jax.Array, jax.Array]):
     """Absolute value nonlinearity."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
         return jnp.abs(x)
 
 
-class ReLU(Bond):
+class ReLU(Bond[jax.Array, jax.Array]):
     """ReLU nonlinearity."""
 
     def __init__(self):
@@ -92,12 +92,12 @@ class ReLU(Bond):
         return jax.nn.relu(x)
 
 
-def ScaledReLU() -> Bond:
+def ScaledReLU() -> Bond[jax.Array, jax.Array]:
     """ReLU scaled to have sensitivity one."""
     return math.sqrt(2) * ReLU()
 
 
-class GELU(Bond):
+class GELU(Bond[jax.Array, jax.Array]):
     """GELU nonlinearity."""
 
     def __init__(self):
@@ -108,12 +108,12 @@ class GELU(Bond):
         return jax.nn.gelu(x)
 
 
-def ScaledGELU() -> Bond:
+def ScaledGELU() -> Bond[jax.Array, jax.Array]:
     """GELU scaled to have sensitivity 1."""
     return math.sqrt(2) * GELU()
 
 
-class MeanSubtract(Bond):
+class MeanSubtract(Bond[jax.Array, jax.Array]):
     """Mean subtraction."""
 
     def __init__(self, axis: int = -1):
@@ -124,7 +124,7 @@ class MeanSubtract(Bond):
         return x - jnp.mean(x, axis=self.axis, keepdims=True)
 
 
-class RMSDivide(Bond):
+class RMSDivide(Bond[jax.Array, jax.Array]):
     """Normalize to have unit RMS norm."""
 
     def __init__(self, axis: int = -1):
@@ -135,12 +135,12 @@ class RMSDivide(Bond):
         return x / jnp.sqrt(jnp.mean(jnp.square(x), axis=self.axis, keepdims=True))
 
 
-def LayerNorm(axis: int = -1) -> Bond:
+def LayerNorm(axis: int = -1) -> Bond[jax.Array, jax.Array]:
     """Mean subtraction followed by RMS normalization."""
     return RMSDivide(axis) @ MeanSubtract(axis)
 
 
-class Mean(Bond):
+class Mean(Bond[jax.Array, jax.Array]):
     """Take the mean over a specified dimension."""
 
     def __init__(self, axis: int):
@@ -151,7 +151,7 @@ class Mean(Bond):
         return jnp.mean(x, axis=self.axis)
 
 
-class AvgPool(Bond):
+class AvgPool(Bond[jax.Array, jax.Array]):
     """Average pooling that adapts to different input sizes."""
 
     def __init__(self, output_size: Tuple[int, int] = (1, 1)):
@@ -162,15 +162,15 @@ class AvgPool(Bond):
         return jax.image.resize(x, x.shape[:2] + self.output_size, method="average")
 
 
-class FunctionalAttention(Bond):
+class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
     """The part of attention that doesn't involve weights."""
 
     def __init__(self, causal: bool = False):
         super().__init__()
         self.causal: bool = causal
 
-    def __call__(self, rng: jax.Array, params: None, x: Tuple[jax.Array, jax.Array, jax.Array, Optional[jax.Array], Optional[jax.Array]]) -> jax.Array:
-        q, k, v, kv_mask, pairwise_mask = x
+    def __call__(self, rng: jax.Array, params: None, x: AttentionInputs) -> jax.Array:
+        q, k, v = x.q, x.k, x.v
         attn_weights = einx.dot("b h q d, b h k d -> b h q k", q, k) / jnp.sqrt(
             q.shape[-1]
         )
@@ -180,17 +180,17 @@ class FunctionalAttention(Bond):
             attn_weights = einx.where(
                 "q k, b h q k, -> b h q k", mask, attn_weights, float("-inf")
             )
-        if kv_mask is not None:
+        if x.kv_mask is not None:
             attn_weights = einx.where(
                 "b k, b h q k, -> b h q k",
-                kv_mask,
+                x.kv_mask,
                 attn_weights,
                 float("-inf"),
             )
-        if pairwise_mask is not None:
+        if x.pairwise_mask is not None:
             attn_weights = einx.where(
                 "b q k, b h q k, -> b h q k",
-                pairwise_mask,
+                x.pairwise_mask,
                 attn_weights,
                 float("-inf"),
             )
