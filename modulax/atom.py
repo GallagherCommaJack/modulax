@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from .abstract import Module
 
 
-class Linear(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
+class Linear(Module[jax.Array, jax.Array, jax.Array]):
     def __init__(self, out_features, in_features, mass=1):
         super().__init__()
         self.mass = mass
@@ -22,9 +22,8 @@ class Linear(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
         self,
         rng: jax.Array,
         x: jax.Array,
-        state: jax.Array,
         params: jax.Array,
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> jax.Array:
         return self.scale * jnp.einsum(
             "...i,oi->...o",
             x,
@@ -74,7 +73,7 @@ class Linear(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
         )
 
 
-class Conv2D(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
+class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
     def __init__(
         self,
         in_channels: int,
@@ -113,7 +112,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
         )
 
     def __call__(
-        self, rng: jax.Array, x: jax.Array, state: jax.Array, params: jax.Array
+        self, rng: jax.Array, x: jax.Array, params: jax.Array
     ):
         return jax.lax.conv_general_dilated(
             x,
@@ -167,7 +166,7 @@ class ShampooLinearState(TypedDict):
     r_inv: jax.Array
 
 
-class ShampooLinear(Module[ShampooLinearState, jax.Array, jax.Array, jax.Array]):
+class ShampooLinear(Module[ShampooLinearState, jax.Array]):
     def __init__(
         self,
         out_features,
@@ -189,9 +188,8 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array, jax.Array, jax.Array])
         self,
         rng: jax.Array,
         x: jax.Array,
-        state: jax.Array,
         params: jax.Array,
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> jax.Array:
         return self.scale * jnp.einsum(
             "...i,oi->...o",
             x,
@@ -225,7 +223,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array, jax.Array, jax.Array])
     def normalize(
         self,
         rng: jax.Array,
-        state: jax.Array,
+        state: ShampooLinearState,
         update: jax.Array,
         target_norm: jax.Array,
     ) -> Tuple[ShampooLinearState, jax.Array]:
@@ -254,7 +252,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array, jax.Array, jax.Array])
     def regularize(
         self,
         rng: jax.Array,
-        state: jax.Array,
+        state: ShampooLinearState,
         params: jax.Array,
         strength: jax.Array,
     ):
