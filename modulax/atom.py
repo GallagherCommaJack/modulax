@@ -62,8 +62,8 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
 
     def normalize(
         self,
-        state: jax.Array,
         update: jax.Array,
+        state: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
         weight = update
         u = state
@@ -71,7 +71,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
         v /= jnp.linalg.norm(v, axis=-1, keepdims=True)
         u = jnp.einsum("hwo,hwoi->hwi", v, weight)
         weight /= jnp.linalg.norm(u, axis=-1, keepdims=True)
-        return u, weight
+        return weight, u
 
 
 class Linear(Module[jax.Array, jax.Array, jax.Array]):
@@ -111,8 +111,8 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
 
     def normalize(
         self,
-        state: jax.Array,
         update: jax.Array,
+        state: jax.Array,
     ) -> Tuple[jax.Array, jax.Array]:
         weight = update
         u = state
@@ -120,7 +120,7 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
         v /= jnp.linalg.norm(v)
         u = jnp.einsum("o,oi->i", v, weight)
         weight /= jnp.linalg.norm(u)
-        return u, weight
+        return weight, u
 
 
 class ShampooLinearState(TypedDict):
@@ -186,9 +186,9 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
 
     def normalize(
         self,
-        state: ShampooLinearState,
         update: jax.Array,
-    ) -> Tuple[ShampooLinearState, jax.Array]:
+        state: ShampooLinearState,
+    ) -> Tuple[jax.Array, ShampooLinearState]:
         r = state["l"] + update @ update.T  # oo
         l = state["r"] + update.T @ update  # ii
         i = state["i"]
@@ -203,10 +203,10 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             state["l_inv"],
         )
         update = r_inv @ update @ l_inv
-        return {
+        return update, {
             "i": i + 1,
             "l": l,
             "l_inv": l_inv,
             "r": r,
             "r_inv": r_inv,
-        }, update
+        }
