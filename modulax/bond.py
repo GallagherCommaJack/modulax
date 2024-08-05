@@ -227,3 +227,50 @@ class FourierFeatures(Bond[jax.Array, Tuple[jax.Array, jax.Array]]):
         )
         y = einx.multiply("b ... d, f -> b ... (d f)", x, freqs)
         return jnp.sin(y), jnp.cos(y)
+
+
+def rotate_half(x: jax.Array) -> jax.Array:
+    x1, x2 = einx.rearrange("... (d h) -> h ... d", x, h=2)
+    y = jnp.stack([-x2, x1], axis=0)
+    x = einx.rearrange("h ... d -> ... (d h)", y)
+    return x
+
+
+class RotaryPositionEmbedding(Bond[Tuple[jax.Array, jax.Array], jax.Array]):
+    def __init__(
+        self,
+        min_wavelength: float,
+        max_wavelength: float,
+        rotate_frac: float = 0.5,
+    ):
+        super().__init__()
+        self.min_wavelength: float = min_wavelength
+        self.max_wavelength: float = max_wavelength
+        self.rotate_frac: float = rotate_frac
+
+    def __call__(
+        self, rng: jax.Array, params: None, x: Tuple[jax.Array, jax.Array]
+    ) -> jax.Array:
+        embs, pos = x
+        *batch, n_head, seq_len, d_head = embs.shape
+        *_, seq_len, d_pos = pos.shape
+        d_model = n_head * d_head
+        d_rot = int(d_model * self.rotate_frac)
+        assert (
+            d_rot % d_pos == 0
+        ), f"{d_rot=} must be divisible by {d_pos=}. {d_model=}, {self.rotate_frac=}"
+        n_bands = d_rot // d_pos
+        n_freqs = n_bands // 2
+        assert n_freqs % n_head == 0, f"{n_freqs=} must be divisible by {n_head=}"
+        freqs = jnp.exp(
+            jnp.linspace(
+                jnp.log(self.min_wavelength),
+                jnp.log(self.max_wavelength),
+                n_freqs,
+            )
+        )
+        freqs_per_head = einx.rearrange("(f h) -> h f", freqs, h=n_head)
+        pos_freqs = einx.multiply("... s d, h f -> ... h s (d f)", pos, freqs_per_head)
+        embs_left, embs_right = jnp.split(embs, [pos_freqs.shape[-1]], axis=-1)
+        embs_left = embs_left * jnp.sin(pos_freqs) + embs_right * jnp.cos(pos_freqs)
+        return jnp.concatenate([embs_left, embs_right], axis=-1)
