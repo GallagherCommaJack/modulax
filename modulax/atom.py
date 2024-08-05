@@ -48,7 +48,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
             dtype=jnp.float32,
         )
 
-    def __call__(self, rng: jax.Array, x: jax.Array, params: jax.Array):
+    def __call__(self, rng: jax.Array, params: jax.Array, x: jax.Array):
         return jax.lax.conv_general_dilated(
             x,
             params,
@@ -102,8 +102,8 @@ class Linear(Module[jax.Array, jax.Array, jax.Array]):
     def __call__(
         self,
         rng: jax.Array,
-        x: jax.Array,
         params: jax.Array,
+        x: jax.Array,
     ) -> jax.Array:
         return self.scale * jnp.einsum(
             "...i,oi->...o",
@@ -170,8 +170,9 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
 
     def __call__(
         self,
-        x: jax.Array,
+        rng: jax.Array,
         params: jax.Array,
+        x: jax.Array,
     ) -> jax.Array:
         return self.scale * jnp.einsum(
             "...i,oi->...o",

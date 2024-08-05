@@ -101,7 +101,7 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
         return opt_state, params
 
     @abstractmethod
-    def __call__(self, rng: jax.Array, x: X, params: Params) -> Y: ...
+    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y: ...
 
     def tare(self, absolute=1, relative=None):
         if relative is not None:
@@ -218,13 +218,13 @@ class CompositeModule(
     def __call__(
         self,
         rng: jax.Array,
-        x: X,
         params: CompositeParams,
+        x: X,
     ) -> Z:
         pf, pg = params
         rf, rg = jax.random.split(rng)
-        y = self.children[0](rf, x, pf)
-        z = self.children[1](rg, y, pg)
+        y = self.children[0](rf, pf, x)
+        z = self.children[1](rg, pg, y)
         return z
 
 
@@ -303,13 +303,13 @@ class TupleModule(
     def __call__(
         self,
         rng: jax.Array,
-        x: X,
         params: CompositeParams,
+        x: X,
     ) -> Tuple[Y, Z]:
         pf, pg = params
         rf, rg = jax.random.split(rng)
-        y = self.children[0](rf, x, pf)
-        z = self.children[1](rg, x, pg)
+        y = self.children[0](rf, pf, x)
+        z = self.children[1](rg, pg, x)
         return y, z
 
 
@@ -327,7 +327,7 @@ class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
     def init_params(self, key):
         return None
 
-    def __call__(self, rng, x: Tuple[X, ...], params):
+    def __call__(self, rng, params, x: Tuple[X, ...]):
         return sum(x)
 
 
@@ -345,7 +345,7 @@ class Add(Module[None, None, X, X], Generic[X]):
     def init_params(self, key):
         return None
 
-    def __call__(self, rng, x: X, params):
+    def __call__(self, rng, params, x: X):
         return jax.tree.map(lambda x: self.alpha + x, x)
 
 
@@ -363,7 +363,7 @@ class Mul(Module[None, None, X, X], Generic[X]):
     def init_params(self, key):
         return None
 
-    def __call__(self, rng, x: X, params):
+    def __call__(self, rng, params, x: X):
         return jax.tree.map(lambda x: self.alpha * x, x)
 
 
@@ -380,7 +380,7 @@ class Prod(Module[None, None, Tuple[X, ...], X], Generic[X]):
     def init_params(self, key):
         return None
 
-    def __call__(self, rng, x: Tuple[X, ...], params):
+    def __call__(self, rng, params, x: Tuple[X, ...]):
         assert len(x) > 0
         _acc = x[0]
         for x in x[1:]:
@@ -449,14 +449,14 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
     def __call__(
         self,
         rng: jax.Array,
-        x: X,
         params: Params,
+        x: X,
     ) -> Tuple[X, X]:
         ks = jax.random.split(rng, self.depth)
 
         def scan_body(x: X, loop_params: Tuple[jax.Array, Params]):
             r, p = loop_params
-            x = self.module(r, x, p)
+            x = self.module(r, p, x)
             return x, x
 
         y, ys = jax.lax.scan(
