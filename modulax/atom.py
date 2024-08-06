@@ -1,10 +1,10 @@
 import math
-from typing import Tuple, TypedDict
+from typing import Literal, Tuple, TypedDict
 
 import jax
 import jax.numpy as jnp
 
-from .abstract import Module, SimpleModule
+from .abstract import Module
 
 
 class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
@@ -76,7 +76,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
         return weight, u
 
 
-class Linear(Module[jax.Array, jax.Array, jax.Array]):
+class SpectralLinear(Module[jax.Array, jax.Array, jax.Array]):
     def __init__(self, out_features, in_features, mass=1):
         super().__init__()
         self.mass = mass
@@ -139,7 +139,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         self,
         out_features,
         in_features,
-        mass=1,
+        mass: float = 1,
         update_preconditioner: int = 10,
         update_inv: int = 100,
         beta: float = 0.9,
@@ -199,7 +199,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         l_inv = jax.lax.cond(
             i % self.update_inv == 0,
             jnp.linalg.matrix_power(l, -1 / 4),
-            state["r_inv"],
+            state["l_inv"],
         )
         r = jax.lax.cond(
             i % self.update_preconditioner == 0,
@@ -209,7 +209,7 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
         r_inv = jax.lax.cond(
             i % self.update_inv == 0,
             jnp.linalg.matrix_power(r, -1 / 4),
-            state["l_inv"],
+            state["r_inv"],
         )
         update = r_inv @ update @ l_inv
         return update, {
@@ -219,3 +219,32 @@ class ShampooLinear(Module[ShampooLinearState, jax.Array]):
             "r": r,
             "r_inv": r_inv,
         }
+
+
+LinearState = ShampooLinearState | jax.Array
+LinearType = SpectralLinear | ShampooLinear
+LinearTypeStr = Literal["spectral", "shampoo"]
+
+
+def linear(
+    in_features: int,
+    out_features: int,
+    mass: float = 1,
+    update_preconditioner: int = 10,
+    update_inv: int = 100,
+    beta: float = 0.9,
+    linear_type: LinearTypeStr = "shampoo",
+) -> LinearType:
+    if linear_type == "spectral":
+        return SpectralLinear(in_features, out_features, mass=mass)
+    elif linear_type == "shampoo":
+        return ShampooLinear(
+            in_features,
+            out_features,
+            mass=mass,
+            update_preconditioner=update_preconditioner,
+            update_inv=update_inv,
+            beta=beta,
+        )
+    else:
+        raise ValueError(f"Unknown linear type: {linear_type}")
