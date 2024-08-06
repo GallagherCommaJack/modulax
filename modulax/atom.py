@@ -1,5 +1,5 @@
 import math
-from typing import Literal, Tuple, TypedDict
+from typing import Literal, Tuple, TypedDict, Union
 
 import jax
 import jax.numpy as jnp
@@ -7,14 +7,14 @@ import jax.numpy as jnp
 from .abstract import Module
 
 
-class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
+class Conv2D(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         kernel_size: int = 3,
         stride: int = 1,
-        padding: str = "same" | Tuple[int, int],
+        padding: Union[str, Tuple[int, int]] = "same",
         mass: float = 1,
     ):
         self.in_channels = in_channels
@@ -101,9 +101,8 @@ class Linear(Module[LinearState, LinearParams, jax.Array, jax.Array]):
         self.eps = eps
 
     def init_opt_state(self, key: jax.Array, params: jax.Array) -> jax.Array:
-        k_u = jax.random.split(key)[1]
         return jax.random.normal(
-            k_u,
+            key,
             (
                 self.num_specnorm_vecs,
                 self.in_features,
@@ -112,12 +111,12 @@ class Linear(Module[LinearState, LinearParams, jax.Array, jax.Array]):
         )
 
     def init_params(self, key: jax.Array) -> jax.Array:
-        k_w = jax.random.split(key)[0]
-        return jax.nn.initializers.orthogonal(column_axis=0)(
-            k_w,
+        w = jax.nn.initializers.orthogonal()(
+            key,
             (self.out_features, self.in_features),
             dtype=jnp.float32,
         )
+        return w
 
     def __call__(
         self,

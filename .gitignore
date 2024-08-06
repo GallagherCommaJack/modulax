@@ -1,3 +1,4 @@
 .python-version
 modula
 .ruff_cache
+__pycache__

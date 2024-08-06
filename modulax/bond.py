@@ -1,5 +1,5 @@
 import math
-from typing import Generic, NamedTuple, Optional, Tuple
+from typing import Generic, NamedTuple, Optional, Tuple, Union
 
 import einx
 import jax
@@ -8,12 +8,15 @@ import jax.numpy as jnp
 from .abstract import Module, X, Y
 
 
-class AttentionInputs(NamedTuple):
+class FullAttentionInputs(NamedTuple):
     q: jax.Array
     k: jax.Array
     v: jax.Array
     kv_mask: Optional[jax.Array] = None
     pairwise_mask: Optional[jax.Array] = None
+
+
+AttentionInputs = Union[FullAttentionInputs, Tuple[jax.Array, jax.Array, jax.Array]]
 
 
 class Bond(Module[None, None, X, Y], Generic[X, Y]):
@@ -170,7 +173,14 @@ class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
         self.causal: bool = causal
 
     def __call__(self, rng: jax.Array, params: None, x: AttentionInputs) -> jax.Array:
-        q, k, v = x.q, x.k, x.v
+        if isinstance(x, FullAttentionInputs):
+            q, k, v = x.q, x.k, x.v
+            kv_mask = x.kv_mask
+            pairwise_mask = x.pairwise_mask
+        else:
+            q, k, v = x
+            kv_mask = None
+            pairwise_mask = None
         attn_weights = einx.dot("b h q d, b h k d -> b h q k", q, k) / jnp.sqrt(
             q.shape[-1]
         )
@@ -180,17 +190,17 @@ class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
             attn_weights = einx.where(
                 "q k, b h q k, -> b h q k", mask, attn_weights, float("-inf")
             )
-        if x.kv_mask is not None:
+        if kv_mask is not None:
             attn_weights = einx.where(
                 "b k, b h q k, -> b h q k",
-                x.kv_mask,
+                kv_mask,
                 attn_weights,
                 float("-inf"),
             )
-        if x.pairwise_mask is not None:
+        if pairwise_mask is not None:
             attn_weights = einx.where(
                 "b q k, b h q k, -> b h q k",
-                x.pairwise_mask,
+                pairwise_mask,
                 attn_weights,
                 float("-inf"),
             )
