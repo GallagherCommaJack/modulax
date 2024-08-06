@@ -162,9 +162,13 @@ class CompositeModule(
         self.length = f.length + g.length
         self.children = [f, g]
 
-    def init_opt_state(self, key: jax.Array, params: CompositeParams) -> CompositeOptState:
+    def init_opt_state(
+        self, key: jax.Array, params: CompositeParams
+    ) -> CompositeOptState:
         ks = jax.random.split(key, len(self.children))
-        return tuple(child.init_opt_state(k, p) for child, k, p in zip(self.children, ks, params))
+        return tuple(
+            child.init_opt_state(k, p) for child, k, p in zip(self.children, ks, params)
+        )
 
     def init_params(self, key: jax.Array) -> CompositeParams:
         ks = jax.random.split(key, len(self.children))
@@ -242,7 +246,9 @@ class TupleModule(
         self.length = f.length + g.length
         self.children = [f, g]
 
-    def init_opt_state(self, key: jax.Array, params: CompositeParams) -> CompositeOptState:
+    def init_opt_state(
+        self, key: jax.Array, params: CompositeParams
+    ) -> CompositeOptState:
         kf, kg = jax.random.split(key)
         pf, pg = params
         sf = self.children[0].init_opt_state(kf, pf)

@@ -76,8 +76,19 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array]):
         return weight, u
 
 
-class SpectralLinear(Module[jax.Array, jax.Array, jax.Array]):
-    def __init__(self, out_features, in_features, mass=1):
+LinearState = jax.Array
+LinearParams = jax.Array
+
+
+class Linear(Module[LinearState, LinearParams, jax.Array, jax.Array]):
+    def __init__(
+        self,
+        out_features: int,
+        in_features: int,
+        mass: float = 1,
+        num_specnorm_vecs: int = 8,
+        eps: float = 1e-6,
+    ):
         super().__init__()
         self.mass = mass
         self.sensitivity = 1
@@ -85,11 +96,20 @@ class SpectralLinear(Module[jax.Array, jax.Array, jax.Array]):
         self.out_features = out_features
         self.in_features = in_features
         self.scale = math.sqrt(out_features / in_features)
+        self.num_specnorm_vecs = num_specnorm_vecs
         self.children = []
+        self.eps = eps
 
     def init_opt_state(self, key: jax.Array, params: jax.Array) -> jax.Array:
         k_u = jax.random.split(key)[1]
-        return jax.random.normal(k_u, (self.in_features,), dtype=jnp.float32)
+        return jax.random.normal(
+            k_u,
+            (
+                self.num_specnorm_vecs,
+                self.in_features,
+            ),
+            dtype=jnp.float32,
+        )
 
     def init_params(self, key: jax.Array) -> jax.Array:
         k_w = jax.random.split(key)[0]
@@ -119,132 +139,9 @@ class SpectralLinear(Module[jax.Array, jax.Array, jax.Array]):
     ) -> Tuple[jax.Array, jax.Array]:
         weight = update
         u = state
-        v = jnp.einsum("i,oi->o", u, weight)
+        v = jnp.einsum("ki,oi->ko", u, weight)
         v /= jnp.linalg.norm(v)
-        u = jnp.einsum("o,oi->i", v, weight)
-        weight /= jnp.linalg.norm(u)
+        u = jnp.einsum("ko,oi->ki", v, weight)
+        n = jnp.max(jnp.linalg.norm(u, axis=-1))
+        weight /= n + self.eps
         return weight, u
-
-
-class ShampooLinearState(TypedDict):
-    i: jax.Array
-    l: jax.Array
-    l_inv: jax.Array
-    r: jax.Array
-    r_inv: jax.Array
-
-
-class ShampooLinear(Module[ShampooLinearState, jax.Array]):
-    def __init__(
-        self,
-        out_features,
-        in_features,
-        mass: float = 1,
-        update_preconditioner: int = 10,
-        update_inv: int = 100,
-        beta: float = 0.9,
-    ):
-        super().__init__()
-        self.mass = mass
-        self.sensitivity = 1
-        self.length = 1
-        self.out_features = out_features
-        self.in_features = in_features
-        self.scale = math.sqrt(out_features / in_features)
-        self.update_preconditioner = update_preconditioner
-        self.update_inv = update_inv
-        self.beta = beta
-        self.children = []
-
-    def init_opt_state(self, key: jax.Array, params: jax.Array) -> ShampooLinearState:
-        return {
-            "i": jnp.zeros((), dtype=jnp.uint32),
-            "l": jnp.eye(self.out_features),
-            "l_inv": jnp.eye(self.out_features),
-            "r": jnp.eye(self.in_features),
-            "r_inv": jnp.eye(self.in_features),
-        }
-
-    def init_params(self, key: jax.Array) -> jax.Array:
-        return jax.nn.initializers.orthogonal(column_axis=0)(
-            key,
-            (self.out_features, self.in_features),
-            dtype=jnp.float32,
-        )
-
-    def __call__(
-        self,
-        rng: jax.Array,
-        params: jax.Array,
-        x: jax.Array,
-    ) -> jax.Array:
-        return self.scale * jnp.einsum(
-            "...i,oi->...o",
-            x,
-            params,
-            preferred_element_type=x.dtype,
-        )
-
-    def normalize(
-        self,
-        update: jax.Array,
-        state: ShampooLinearState,
-    ) -> Tuple[jax.Array, ShampooLinearState]:
-        i = state["i"]
-        l = jax.lax.cond(
-            i % self.update_preconditioner == 0,
-            state["l"] * self.beta + update @ update.T * (1 - self.beta),
-            state["l"],
-        )
-        l_inv = jax.lax.cond(
-            i % self.update_inv == 0,
-            jnp.linalg.matrix_power(l, -1 / 4),
-            state["l_inv"],
-        )
-        r = jax.lax.cond(
-            i % self.update_preconditioner == 0,
-            state["r"] * self.beta + update.T @ update * (1 - self.beta),
-            state["r"],
-        )
-        r_inv = jax.lax.cond(
-            i % self.update_inv == 0,
-            jnp.linalg.matrix_power(r, -1 / 4),
-            state["r_inv"],
-        )
-        update = r_inv @ update @ l_inv
-        return update, {
-            "i": i + 1,
-            "l": l,
-            "l_inv": l_inv,
-            "r": r,
-            "r_inv": r_inv,
-        }
-
-
-LinearState = ShampooLinearState | jax.Array
-LinearType = SpectralLinear | ShampooLinear
-LinearTypeStr = Literal["spectral", "shampoo"]
-
-
-def linear(
-    in_features: int,
-    out_features: int,
-    mass: float = 1,
-    update_preconditioner: int = 10,
-    update_inv: int = 100,
-    beta: float = 0.9,
-    linear_type: LinearTypeStr = "shampoo",
-) -> LinearType:
-    if linear_type == "spectral":
-        return SpectralLinear(in_features, out_features, mass=mass)
-    elif linear_type == "shampoo":
-        return ShampooLinear(
-            in_features,
-            out_features,
-            mass=mass,
-            update_preconditioner=update_preconditioner,
-            update_inv=update_inv,
-            beta=beta,
-        )
-    else:
-        raise ValueError(f"Unknown linear type: {linear_type}")

@@ -6,7 +6,7 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from .abstract import Module
-from .atom import LinearState, LinearTypeStr, linear
+from .atom import Linear, LinearState, LinearParams
 
 
 class TransformerStream(TypedDict):
@@ -16,27 +16,21 @@ class TransformerStream(TypedDict):
     pairwise_mask: Optional[Array]
 
 
-class AdaRMSNorm(Module[LinearState, Array, Tuple[Array, Array], Array]):
+class AdaRMSNorm(Module[LinearState, LinearParams, Tuple[Array, Array], Array]):
     def __init__(
         self,
-        linear_type: LinearTypeStr,
         d_cond: int,
         d_model: int,
         mass: float = 1,
-        update_preconditioner: int = 10,
-        update_inv: int = 100,
-        beta: float = 0.9,
         eps: float = 1e-6,
         base: float = 1.0,
+        num_specnorm_vecs: int = 8,
     ):
-        m = linear(
-            linear_type,
-            d_cond,
-            d_model,
-            mass,
-            update_preconditioner,
-            update_inv,
-            beta,
+        m = Linear(
+            input_features=d_cond,
+            output_features=d_model,
+            mass=mass,
+            num_specnorm_vecs=num_specnorm_vecs,
         )
         self.mass = m.mass
         self.children = [m]
