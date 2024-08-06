@@ -12,14 +12,17 @@ Params = TypeVar("Params")
 X = TypeVar("X")
 Y = TypeVar("Y")
 Z = TypeVar("Z")
+W = TypeVar("W")
+V = TypeVar("V")
 
 OptStateF = TypeVar("OptStateF")
 OptStateG = TypeVar("OptStateG")
+OptStateH = TypeVar("OptStateH")
+OptStateI = TypeVar("OptStateI")
 ParamsF = TypeVar("ParamsF")
 ParamsG = TypeVar("ParamsG")
-
-CompositeOptState = Tuple[OptStateF, OptStateG]
-CompositeParams = Tuple[ParamsF, ParamsG]
+ParamsH = TypeVar("ParamsH")
+ParamsI = TypeVar("ParamsI")
 
 
 class Module(ABC, Generic[OptState, Params, X, Y]):
@@ -112,9 +115,31 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
             self.tare(relative=absolute / self.mass)
 
     def __matmul__(self, other):
+        if isinstance(other, tuple):
+            if len(other) == 2:
+                other = TupleModule(*other)
+            elif len(other) == 3:
+                other = TripleModule(*other)
+            elif len(other) == 4:
+                other = QuadrupleModule(*other)
+            else:
+                raise ValueError(
+                    f"cannot multiply a module by a tuple of length {len(other)}"
+                )
         return CompositeModule(self, other)
 
     def __rmatmul__(self, other):
+        if isinstance(other, tuple):
+            if len(other) == 2:
+                other = TupleModule(*other)
+            elif len(other) == 3:
+                other = TripleModule(*other)
+            elif len(other) == 4:
+                other = QuadrupleModule(*other)
+            else:
+                raise ValueError(
+                    f"cannot multiply a module by a tuple of length {len(other)}"
+                )
         return other @ self
 
     def __add__(self, other: int | float | "Module[OptStateF, ParamsF, X, Y]"):
@@ -147,7 +172,7 @@ class Module(ABC, Generic[OptState, Params, X, Y]):
 
 
 class CompositeModule(
-    Module[CompositeOptState, CompositeParams, X, Z],
+    Module[Tuple[OptStateF, OptStateG], Tuple[ParamsF, ParamsG], X, Z],
     Generic[OptStateF, OptStateG, ParamsF, ParamsG, X, Y, Z],
 ):
     children: List[Module[OptStateF, ParamsF, X, Y] | Module[OptStateG, ParamsG, Y, Z]]
@@ -163,23 +188,23 @@ class CompositeModule(
         self.children = [f, g]
 
     def init_opt_state(
-        self, key: jax.Array, params: CompositeParams
-    ) -> CompositeOptState:
+        self, key: jax.Array, params: Tuple[ParamsF, ParamsG]
+    ) -> Tuple[OptStateF, OptStateG]:
         ks = jax.random.split(key, len(self.children))
         return tuple(
             child.init_opt_state(k, p) for child, k, p in zip(self.children, ks, params)
         )
 
-    def init_params(self, key: jax.Array) -> CompositeParams:
+    def init_params(self, key: jax.Array) -> Tuple[ParamsF, ParamsG]:
         ks = jax.random.split(key, len(self.children))
         return tuple(child.init_params(k) for child, k in zip(self.children, ks))
 
     def scale_updates(
         self,
-        opt_state: CompositeOptState,
-        update: CompositeParams,
+        opt_state: Tuple[OptStateF, OptStateG],
+        update: Tuple[ParamsF, ParamsG],
         target_norm: jax.Array,
-    ) -> Tuple[CompositeOptState, CompositeParams]:
+    ) -> Tuple[Tuple[OptStateF, OptStateG], Tuple[ParamsF, ParamsG]]:
         sf, sg = opt_state
         uf, ug = update
         f, g = self.children
@@ -197,9 +222,9 @@ class CompositeModule(
 
     def normalize(
         self,
-        update: CompositeParams,
-        opt_state: CompositeOptState,
-    ) -> Tuple[CompositeParams, CompositeOptState]:
+        update: Tuple[ParamsF, ParamsG],
+        opt_state: Tuple[OptStateF, OptStateG],
+    ) -> Tuple[Tuple[ParamsF, ParamsG], Tuple[OptStateF, OptStateG]]:
         uf, ug = update
         sf, sg = opt_state
         f, g = self.children
@@ -209,9 +234,9 @@ class CompositeModule(
 
     def regularize(
         self,
-        params: CompositeParams,
-        opt_state: CompositeOptState,
-    ) -> Tuple[CompositeParams, CompositeOptState]:
+        params: Tuple[ParamsF, ParamsG],
+        opt_state: Tuple[OptStateF, OptStateG],
+    ) -> Tuple[Tuple[ParamsF, ParamsG], Tuple[OptStateF, OptStateG]]:
         uf, ug = params
         sf, sg = opt_state
         f, g = self.children
@@ -222,7 +247,7 @@ class CompositeModule(
     def __call__(
         self,
         rng: jax.Array,
-        params: CompositeParams,
+        params: Tuple[ParamsF, ParamsG],
         x: X,
     ) -> Z:
         pf, pg = params
@@ -233,7 +258,7 @@ class CompositeModule(
 
 
 class TupleModule(
-    Module[CompositeOptState, CompositeParams, X, Tuple[Y, Z]],
+    Module[Tuple[OptStateF, OptStateG], Tuple[ParamsF, ParamsG], X, Tuple[Y, Z]],
     Generic[OptStateF, OptStateG, ParamsF, ParamsG, X, Y, Z],
 ):
     def __init__(
@@ -247,15 +272,15 @@ class TupleModule(
         self.children = [f, g]
 
     def init_opt_state(
-        self, key: jax.Array, params: CompositeParams
-    ) -> CompositeOptState:
+        self, key: jax.Array, params: Tuple[ParamsF, ParamsG]
+    ) -> Tuple[OptStateF, OptStateG]:
         kf, kg = jax.random.split(key)
         pf, pg = params
         sf = self.children[0].init_opt_state(kf, pf)
         sg = self.children[1].init_opt_state(kg, pg)
         return (sf, sg)
 
-    def init_params(self, key: jax.Array) -> CompositeParams:
+    def init_params(self, key: jax.Array) -> Tuple[ParamsF, ParamsG]:
         kf, kg = jax.random.split(key)
         pf = self.children[0].init_params(kf)
         pg = self.children[1].init_params(kg)
@@ -263,10 +288,10 @@ class TupleModule(
 
     def scale_updates(
         self,
-        opt_state: CompositeOptState,
-        update: CompositeParams,
+        opt_state: Tuple[OptStateF, OptStateG],
+        update: Tuple[ParamsF, ParamsG],
         target_norm: jax.Array,
-    ) -> Tuple[CompositeOptState, CompositeParams]:
+    ) -> Tuple[Tuple[OptStateF, OptStateG], Tuple[ParamsF, ParamsG]]:
         sf, sg = opt_state
         uf, ug = update
         mf, mg = self.children
@@ -284,8 +309,8 @@ class TupleModule(
 
     def normalize(
         self,
-        update: CompositeParams,
-        opt_state: CompositeOptState,
+        update: Tuple[ParamsF, ParamsG],
+        opt_state: Tuple[OptStateF, OptStateG],
     ):
         uf, ug = update
         sf, sg = opt_state
@@ -296,9 +321,9 @@ class TupleModule(
 
     def regularize(
         self,
-        params: CompositeParams,
-        opt_state: CompositeOptState,
-    ) -> Tuple[CompositeParams, CompositeOptState]:
+        params: Tuple[ParamsF, ParamsG],
+        opt_state: Tuple[OptStateF, OptStateG],
+    ) -> Tuple[Tuple[ParamsF, ParamsG], Tuple[OptStateF, OptStateG]]:
         uf, ug = params
         sf, sg = opt_state
         f, g = self.children
@@ -309,7 +334,7 @@ class TupleModule(
     def __call__(
         self,
         rng: jax.Array,
-        params: CompositeParams,
+        params: Tuple[ParamsF, ParamsG],
         x: X,
     ) -> Tuple[Y, Z]:
         pf, pg = params
@@ -317,6 +342,219 @@ class TupleModule(
         y = self.children[0](rf, pf, x)
         z = self.children[1](rg, pg, x)
         return y, z
+
+
+class TripleModule(
+    Module[
+        Tuple[OptStateF, OptStateG, OptStateH],
+        Tuple[ParamsF, ParamsG, ParamsH],
+        X,
+        Tuple[Y, Z, W],
+    ],
+    Generic[OptStateF, OptStateG, OptStateH, ParamsF, ParamsG, ParamsH, X, Y, Z, W],
+):
+    def __init__(
+        self,
+        f: Module[OptStateF, ParamsF, X, Y],
+        g: Module[OptStateG, ParamsG, X, Z],
+        h: Module[OptStateH, ParamsH, X, W],
+    ):
+        self.mass = f.mass + g.mass + h.mass
+        self.sensitivity = f.sensitivity + g.sensitivity + h.sensitivity
+        self.length = f.length + g.length + h.length
+        self.children = [f, g, h]
+
+    def init_opt_state(
+        self, key: jax.Array, params: Tuple[ParamsF, ParamsG, ParamsH]
+    ) -> Tuple[OptStateF, OptStateG, OptStateH]:
+        kf, kg, kh = jax.random.split(key, 3)
+        pf, pg, ph = params
+        sf = self.children[0].init_opt_state(kf, pf)
+        sg = self.children[1].init_opt_state(kg, pg)
+        sh = self.children[2].init_opt_state(kh, ph)
+        return (sf, sg, sh)
+
+    def init_params(self, key: jax.Array) -> Tuple[ParamsF, ParamsG, ParamsH]:
+        kf, kg, kh = jax.random.split(key, 3)
+        pf = self.children[0].init_params(kf)
+        pg = self.children[1].init_params(kg)
+        ph = self.children[2].init_params(kh)
+        return (pf, pg, ph)
+
+    def scale_updates(
+        self,
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH],
+        update: Tuple[ParamsF, ParamsG, ParamsH],
+        target_norm: jax.Array,
+    ) -> Tuple[
+        Tuple[OptStateF, OptStateG, OptStateH], Tuple[ParamsF, ParamsG, ParamsH]
+    ]:
+        sf, sg, sh = opt_state
+        uf, ug, uh = update
+        mf, mg, mh = self.children
+        sf, uf = mf.scale_updates(sf, uf, target_norm=target_norm * mf.mass / self.mass)
+        sg, ug = mg.scale_updates(sg, ug, target_norm=target_norm * mg.mass / self.mass)
+        sh, uh = mh.scale_updates(sh, uh, target_norm=target_norm * mh.mass / self.mass)
+        return (sf, sg, sh), (uf, ug, uh)
+
+    def normalize(
+        self,
+        update: Tuple[ParamsF, ParamsG, ParamsH],
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH],
+    ):
+        uf, ug, uh = update
+        sf, sg, sh = opt_state
+        f, g, h = self.children
+        uf, sf = f.normalize(uf, sf)
+        ug, sg = g.normalize(ug, sg)
+        uh, sh = h.normalize(uh, sh)
+        return (uf, ug, uh), (sf, sg, sh)
+
+    def regularize(
+        self,
+        params: Tuple[ParamsF, ParamsG, ParamsH],
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH],
+    ) -> Tuple[
+        Tuple[ParamsF, ParamsG, ParamsH], Tuple[OptStateF, OptStateG, OptStateH]
+    ]:
+        uf, ug, uh = params
+        sf, sg, sh = opt_state
+        f, g, h = self.children
+        uf, sf = f.regularize(uf, sf)
+        ug, sg = g.regularize(ug, sg)
+        uh, sh = h.regularize(uh, sh)
+        return (uf, ug, uh), (sf, sg, sh)
+
+    def __call__(
+        self,
+        rng: jax.Array,
+        params: Tuple[ParamsF, ParamsG, ParamsH],
+        x: X,
+    ) -> Tuple[Y, Z, W]:
+        pf, pg, ph = params
+        rf, rg, rh = jax.random.split(rng, 3)
+        y = self.children[0](rf, pf, x)
+        z = self.children[1](rg, pg, x)
+        w = self.children[2](rh, ph, x)
+        return y, z, w
+
+
+class QuadrupleModule(
+    Module[
+        Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+        Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        X,
+        Tuple[Y, Z, W, V],
+    ],
+    Generic[
+        OptStateF,
+        OptStateG,
+        OptStateH,
+        OptStateI,
+        ParamsF,
+        ParamsG,
+        ParamsH,
+        ParamsI,
+        X,
+        Y,
+        Z,
+        W,
+        V,
+    ],
+):
+    def __init__(
+        self,
+        f: Module[OptStateF, ParamsF, X, Y],
+        g: Module[OptStateG, ParamsG, X, Z],
+        h: Module[OptStateH, ParamsH, X, W],
+        i: Module[OptStateI, ParamsI, X, V],
+    ):
+        self.mass = f.mass + g.mass + h.mass + i.mass
+        self.sensitivity = f.sensitivity + g.sensitivity + h.sensitivity + i.sensitivity
+        self.length = f.length + g.length + h.length + i.length
+        self.children = [f, g, h, i]
+
+    def init_opt_state(
+        self, key: jax.Array, params: Tuple[ParamsF, ParamsG, ParamsH, ParamsI]
+    ) -> Tuple[OptStateF, OptStateG, OptStateH, OptStateI]:
+        kf, kg, kh, ki = jax.random.split(key, 4)
+        pf, pg, ph, pi = params
+        sf = self.children[0].init_opt_state(kf, pf)
+        sg = self.children[1].init_opt_state(kg, pg)
+        sh = self.children[2].init_opt_state(kh, ph)
+        si = self.children[3].init_opt_state(ki, pi)
+        return (sf, sg, sh, si)
+
+    def init_params(self, key: jax.Array) -> Tuple[ParamsF, ParamsG, ParamsH, ParamsI]:
+        kf, kg, kh, ki = jax.random.split(key, 4)
+        pf = self.children[0].init_params(kf)
+        pg = self.children[1].init_params(kg)
+        ph = self.children[2].init_params(kh)
+        pi = self.children[3].init_params(ki)
+        return (pf, pg, ph, pi)
+
+    def scale_updates(
+        self,
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+        update: Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        target_norm: jax.Array,
+    ) -> Tuple[
+        Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+        Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+    ]:
+        sf, sg, sh, si = opt_state
+        uf, ug, uh, ui = update
+        mf, mg, mh, mi = self.children
+        sf, uf = mf.scale_updates(sf, uf, target_norm=target_norm * mf.mass / self.mass)
+        sg, ug = mg.scale_updates(sg, ug, target_norm=target_norm * mg.mass / self.mass)
+        sh, uh = mh.scale_updates(sh, uh, target_norm=target_norm * mh.mass / self.mass)
+        si, ui = mi.scale_updates(si, ui, target_norm=target_norm * mi.mass / self.mass)
+        return (sf, sg, sh, si), (uf, ug, uh, ui)
+
+    def normalize(
+        self,
+        update: Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+    ):
+        uf, ug, uh, ui = update
+        sf, sg, sh, si = opt_state
+        f, g, h, i = self.children
+        uf, sf = f.normalize(uf, sf)
+        ug, sg = g.normalize(ug, sg)
+        uh, sh = h.normalize(uh, sh)
+        ui, si = i.normalize(ui, si)
+        return (uf, ug, uh, ui), (sf, sg, sh, si)
+
+    def regularize(
+        self,
+        params: Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        opt_state: Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+    ) -> Tuple[
+        Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        Tuple[OptStateF, OptStateG, OptStateH, OptStateI],
+    ]:
+        uf, ug, uh, ui = params
+        sf, sg, sh, si = opt_state
+        f, g, h, i = self.children
+        uf, sf = f.regularize(uf, sf)
+        ug, sg = g.regularize(ug, sg)
+        uh, sh = h.regularize(uh, sh)
+        ui, si = i.regularize(ui, si)
+        return (uf, ug, uh, ui), (sf, sg, sh, si)
+
+    def __call__(
+        self,
+        rng: jax.Array,
+        params: Tuple[ParamsF, ParamsG, ParamsH, ParamsI],
+        x: X,
+    ) -> Tuple[Y, Z, W, V]:
+        pf, pg, ph, pi = params
+        rf, rg, rh, ri = jax.random.split(rng, 4)
+        y = self.children[0](rf, pf, x)
+        z = self.children[1](rg, pg, x)
+        w = self.children[2](rh, ph, x)
+        v = self.children[3](ri, pi, x)
+        return y, z, w, v
 
 
 class Sum(Module[None, None, Tuple[X, ...], X], Generic[X]):
@@ -407,7 +645,7 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
         self.module = module
         self.mass = module.mass * depth
         self.sensitivity = module.sensitivity**depth
-        self.length = module.length * depth
+        self.length = module.length
         self.children = [module]
         self.reverse = reverse
         self.unroll = unroll
@@ -476,3 +714,64 @@ class Pow(Module[OptState, Params, X, Tuple[X, X]], Generic[OptState, Params, X]
         )
 
         return y, ys
+
+
+class VMap(Module[OptState, Params, X, Y], Generic[OptState, Params, X, Y]):
+    def __init__(
+        self,
+        n: int,
+        module: Module[OptState, Params, X, X],
+        tuple_mode: bool = True,
+    ):
+        self.n = n
+        self.module = module
+        self.mass = module.mass * n
+        self.sensitivity = module.sensitivity**n
+        self.length = module.length
+        self.children = [module]
+        self.tuple_mode = tuple_mode
+
+    def init_opt_state(self, key: jax.Array, params: Params) -> OptState:
+        ks = jax.random.split(key, self.n)
+        return jax.vmap(self.module.init_opt_state)(ks, params)
+
+    def init_params(self, key: jax.Array) -> Params:
+        ks = jax.random.split(key, self.n)
+        return jax.vmap(self.module.init_params)(ks)
+
+    def scale_updates(
+        self,
+        opt_state: OptState,
+        update: Params,
+        target_norm: jax.Array,
+    ) -> Tuple[OptState, Params]:
+        opt_state, update = jax.vmap(self.module.scale_updates)(
+            opt_state, update, target_norm / self.n
+        )
+        return opt_state, update
+
+    def regularize(
+        self,
+        params: Params,
+        opt_state: OptState,
+    ) -> Tuple[Params, OptState]:
+        return jax.vmap(self.module.regularize)(params, opt_state)
+
+    def normalize(
+        self,
+        update: Params,
+        opt_state: OptState,
+    ) -> Tuple[Params, OptState]:
+        return jax.vmap(self.module.normalize)(update, opt_state)
+
+    def __call__(
+        self,
+        rng: jax.Array,
+        params: Params,
+        x: X,
+    ) -> Tuple[X, X]:
+        ks = jax.random.split(rng, self.n)
+        if self.tuple_mode:
+            x = jax.tree.map(lambda x: x[None], x)
+        y = jax.vmap(self.module)(ks, params, x)
+        return y

@@ -7,6 +7,7 @@ from jax.typing import ArrayLike
 
 from .abstract import Module
 from .atom import Linear, LinearState, LinearParams
+from .bond import AddHeads, RemoveHeads, FunctionalAttention
 
 
 class TransformerStream(TypedDict):
@@ -67,3 +68,11 @@ class AdaRMSNorm(Module[LinearState, LinearParams, Tuple[Array, Array], Array]):
         x /= jnp.sqrt(jnp.mean(jnp.square(x), axis=-1, keepdims=True) + self.eps)
         scales = self.base + self.children[0](params, rng, cond)
         return x * scales
+
+
+def Attention(num_heads: int, d_model: int, d_qk: int, d_v: int):
+    Q = AddHeads(num_heads) @ Linear(num_heads * d_qk, d_model)
+    K = AddHeads(num_heads) @ Linear(num_heads * d_qk, d_model)
+    V = AddHeads(num_heads) @ Linear(num_heads * d_v, d_model)
+    O = Linear(d_model, num_heads * d_v) @ RemoveHeads()
+    return O @ FunctionalAttention() @ (Q, K, V)

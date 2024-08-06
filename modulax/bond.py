@@ -274,3 +274,15 @@ class RotaryPositionEmbedding(Bond[Tuple[jax.Array, jax.Array], jax.Array]):
         embs_left, embs_right = jnp.split(embs, [pos_freqs.shape[-1]], axis=-1)
         embs_left = embs_left * jnp.sin(pos_freqs) + embs_right * jnp.cos(pos_freqs)
         return jnp.concatenate([embs_left, embs_right], axis=-1)
+
+
+class Tuplefy(Bond[jax.Array, Tuple[jax.Array, ...]]):
+    def __init__(self, axis: int = 0):
+        super().__init__()
+        self.axis: int = axis
+
+    def __call__(
+        self, rng: jax.Array, params: None, x: jax.Array
+    ) -> Tuple[jax.Array, ...]:
+        x = jnp.moveaxis(x, self.axis, 0)
+        return tuple(x)
