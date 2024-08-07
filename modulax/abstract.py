@@ -117,14 +117,27 @@ class Module(ABC):
             other = TupleModule(*other)
         elif isinstance(other, dict):
             other = DictModule(other)
-        return CompositeModule(other, self)
+
+        children = []
+        if isinstance(self, CompositeModule):
+            children.extend(self.children)
+        else:
+            children.append(self)
+        if isinstance(other, CompositeModule):
+            children.extend(other.children)
+        else:
+            children.append(other)
+
+        return CompositeModule(*children)
 
     def __rmatmul__(self, other):
         if isinstance(other, tuple):
             other = TupleModule(*other)
         elif isinstance(other, dict):
             other = DictModule(other)
-        return CompositeModule(self, other)
+        else:
+            raise ValueError("cannot multiply a module by a non-module")
+        return other @ self
 
     def __add__(self, other: Union[int, float, "Module"]):
         if isinstance(other, (int, float)):
@@ -158,15 +171,11 @@ class Module(ABC):
 class CompositeModule(Module):
     children: List[Module]
 
-    def __init__(
-        self,
-        f: Module,
-        g: Module,
-    ):
-        self.mass = f.mass + g.mass
-        self.sensitivity = f.sensitivity * g.sensitivity
-        self.length = f.length + g.length
-        self.children = [f, g]
+    def __init__(self, *modules: Module):
+        self.children = list(modules)
+        self.mass = sum(m.mass for m in self.children)
+        self.sensitivity = np.prod([m.sensitivity for m in self.children])
+        self.length = sum(m.length for m in self.children)
 
     def init_opt_state(self, key: jax.Array, params):
         ks = jax.random.split(key, len(self.children))
@@ -184,44 +193,49 @@ class CompositeModule(Module):
         update,
         target_norm: jax.Array,
     ):
-        sf, sg = opt_state
-        uf, ug = update
-        f, g = self.children
+        scaled_states = []
+        scaled_updates = []
+        remaining_sensitivity = 1.0
+        for i, (child, state, upd) in enumerate(zip(self.children, opt_state, update)):
+            if i < len(self.children) - 1:
+                child_target_norm = (
+                    target_norm * child.mass / self.mass / remaining_sensitivity
+                )
+                remaining_sensitivity *= child.sensitivity
+            else:
+                child_target_norm = target_norm * child.mass / self.mass
 
-        if self.mass > 0:
-            sf, scale_f = f.scale_updates(
-                sf,
-                uf,
-                target_norm=target_norm * f.mass / self.mass / g.sensitivity,
-            )
-            sg, scale_g = g.scale_updates(
-                sg, ug, target_norm=target_norm * g.mass / self.mass
-            )
-        return (sf, sg), (scale_f, scale_g)
+            s, u = child.scale_updates(state, upd, target_norm=child_target_norm)
+            scaled_states.append(s)
+            scaled_updates.append(u)
+
+        return tuple(scaled_states), tuple(scaled_updates)
 
     def normalize(
         self,
         update,
         opt_state,
     ):
-        uf, ug = update
-        sf, sg = opt_state
-        f, g = self.children
-        uf, sf = f.normalize(uf, sf)
-        ug, sg = g.normalize(ug, sg)
-        return (uf, ug), (sf, sg)
+        normalized_updates = []
+        normalized_states = []
+        for child, u, s in zip(self.children, update, opt_state):
+            nu, ns = child.normalize(u, s)
+            normalized_updates.append(nu)
+            normalized_states.append(ns)
+        return tuple(normalized_updates), tuple(normalized_states)
 
     def regularize(
         self,
         params,
         opt_state,
     ):
-        uf, ug = params
-        sf, sg = opt_state
-        f, g = self.children
-        uf, sf = f.regularize(uf, sf)
-        ug, sg = g.regularize(ug, sg)
-        return (uf, ug), (sf, sg)
+        regularized_params = []
+        regularized_states = []
+        for child, p, s in zip(self.children, params, opt_state):
+            rp, rs = child.regularize(p, s)
+            regularized_params.append(rp)
+            regularized_states.append(rs)
+        return tuple(regularized_params), tuple(regularized_states)
 
     def __call__(
         self,
@@ -229,11 +243,10 @@ class CompositeModule(Module):
         params,
         x,
     ):
-        pf, pg = params
-        rf, rg = jax.random.split(rng)
-        y = self.children[0](rf, pf, x)
-        z = self.children[1](rg, pg, y)
-        return z
+        rngs = jax.random.split(rng, len(self.children))
+        for child, p, r in zip(self.children[::-1], params[::-1], rngs):
+            x = child(r, p, x)
+        return x
 
 
 class TupleModule(Module):

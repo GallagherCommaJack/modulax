@@ -19,7 +19,7 @@ class FullAttentionInputs(NamedTuple):
 AttentionInputs = Union[FullAttentionInputs, Tuple[jax.Array, jax.Array, jax.Array]]
 
 
-class Bond(Module[None, None, jax.Array, jax.Array]):
+class Bond(Module):
     """A module with no weights."""
 
     def __init__(self):
