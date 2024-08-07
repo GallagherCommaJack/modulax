@@ -1,10 +1,23 @@
-from abc import ABC, abstractmethod
-from typing import Dict, List, Sequence, Tuple, TypeVar, Union
+import contextlib
+from abc import ABC
+from typing import (
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import jax
 import jax.numpy as jnp
+import jax.sharding
 import numpy as np
 import optax
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 OptState = TypeVar("OptState")
 Params = TypeVar("Params")
@@ -24,17 +37,102 @@ ParamsH = TypeVar("ParamsH")
 ParamsI = TypeVar("ParamsI")
 
 
+class ShardingConfig(NamedTuple):
+    mesh: Mesh
+    fsdp_axis: Union[None, str, Sequence[str]] = "dp"
+    dp_axis: Union[None, str, Sequence[str]] = "dp"
+    mp_axis: Union[None, str, Sequence[str]] = None
+
+
+_SHARDING_CONFIG = None
+
+
+@contextlib.contextmanager
+def with_sharding_config(config: ShardingConfig):
+    global _SHARDING_CONFIG
+    old_config = _SHARDING_CONFIG
+    _SHARDING_CONFIG = config
+    yield
+    _SHARDING_CONFIG = old_config
+
+
+def get_sharding_config() -> ShardingConfig:
+    if _SHARDING_CONFIG is None:
+        raise ValueError("sharding config not set")
+    return _SHARDING_CONFIG
+
+
+ShardingMode = Literal["none", "fsdp", "mp", "both"]
+
+_SHARDING_MODE = "none"
+
+
+@contextlib.contextmanager
+def with_sharding_mode(mode: ShardingMode):
+    global _SHARDING_MODE
+    old_mode = _SHARDING_MODE
+    _SHARDING_MODE = mode
+    yield
+    _SHARDING_MODE = old_mode
+
+
+def get_sharding_mode() -> ShardingMode:
+    return _SHARDING_MODE
+
+
 class Module(ABC):
     mass: float
     sensitivity: float
     length: int
     children: List["Module"]
 
-    @abstractmethod
-    def init_opt_state(self, key: jax.Array, params: Params) -> OptState: ...
+    def init_params(self, key: jax.Array) -> Params:
+        return None
 
-    @abstractmethod
-    def init_params(self, key: jax.Array) -> Params: ...
+    def init_opt_state(self, key: jax.Array, params: Params) -> OptState:
+        return None
+
+    def shard_params(
+        self,
+        params: Params,
+        *,
+        config: Optional[ShardingConfig] = None,
+        mode: Optional[ShardingMode] = None,
+    ) -> Params:
+        if mode is None:
+            mode = get_sharding_mode()
+        if config is None:
+            config = get_sharding_config()
+        return self._shard_params(params, config, mode)
+
+    def _shard_params(
+        self, params: Params, config: ShardingConfig, mode: ShardingMode
+    ) -> Params:
+        return jax.tree.map(
+            lambda _: NamedSharding(config.mesh, PartitionSpec()),
+            params,
+        )
+
+    def shard_opt_state(
+        self,
+        opt_state: OptState,
+        *,
+        config: Optional[ShardingConfig] = None,
+        mode: Optional[ShardingMode] = None,
+    ) -> OptState:
+        if mode is None:
+            mode = get_sharding_mode()
+        if config is None:
+            config = get_sharding_config()
+        return self._shard_opt_state(opt_state, config, mode)
+
+    def _shard_opt_state(
+        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
+    ) -> OptState:
+        return jax.tree.map(
+            lambda _: NamedSharding(config.mesh, PartitionSpec()),
+            opt_state,
+        )
 
     def scale_updates(
         self,
@@ -101,8 +199,10 @@ class Module(ABC):
         )
         return opt_state, params
 
-    @abstractmethod
-    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y: ...
+    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y:
+        raise NotImplementedError(
+            f"__call__ not implemented for {self.__class__.__name__}"
+        )
 
     def tare(self, absolute=1, relative=None):
         if relative is not None:
@@ -248,6 +348,22 @@ class CompositeModule(Module):
             x = child(r, p, x)
         return x
 
+    def _shard_params(
+        self, params: Params, config: ShardingConfig, mode: ShardingMode
+    ) -> Params:
+        return tuple(
+            child._shard_params(p, config, mode)
+            for child, p in zip(self.children, params)
+        )
+
+    def _shard_opt_state(
+        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
+    ) -> OptState:
+        return tuple(
+            child._shard_opt_state(s, config, mode)
+            for child, s in zip(self.children, opt_state)
+        )
+
 
 class TupleModule(Module):
     def __init__(self, *modules: Module):
@@ -310,12 +426,37 @@ class TupleModule(Module):
         keys = jax.random.split(rng, len(self.children))
         return tuple(child(k, p, x) for child, k, p in zip(self.children, keys, params))
 
+    def __getitem__(self, idx: int):
+        return self.children[idx]
+
+    def __len__(self):
+        return len(self.children)
+
+    def __iter__(self):
+        return iter(self.children)
+
+    def _shard_params(
+        self, params: Params, config: ShardingConfig, mode: ShardingMode
+    ) -> Params:
+        return tuple(
+            child._shard_params(p, config, mode)
+            for child, p in zip(self.children, params)
+        )
+
+    def _shard_opt_state(
+        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
+    ) -> OptState:
+        return tuple(
+            child._shard_opt_state(s, config, mode)
+            for child, s in zip(self.children, opt_state)
+        )
+
 
 class DictModule(Module):
     def __init__(self, modules: Dict[str, Module]):
         self.modules = modules
         self.mass = sum(m.mass for m in self.modules.values())
-        self.sensitivity = max(m.sensitivity for m in self.modules.values())
+        self.sensitivity = sum(m.sensitivity for m in self.modules.values())
         self.length = sum(m.length for m in self.modules.values())
         self.children = list(self.modules.values())
 
@@ -398,6 +539,21 @@ class DictModule(Module):
 
     def values(self):
         return self.modules.values()
+
+    def _shard_params(
+        self, params: Dict[str, Params], config: ShardingConfig, mode: ShardingMode
+    ) -> Dict[str, Params]:
+        return {
+            k: m._shard_params(params[k], config, mode) for k, m in self.modules.items()
+        }
+
+    def _shard_opt_state(
+        self, opt_state: Dict[str, OptState], config: ShardingConfig, mode: ShardingMode
+    ) -> Dict[str, OptState]:
+        return {
+            k: m._shard_opt_state(opt_state[k], config, mode)
+            for k, m in self.modules.items()
+        }
 
 
 class Sum(Module):
@@ -621,177 +777,13 @@ class VMap(Module):
         return y
 
 
-class ModuleList(Module):
-    def __init__(self, modules: Sequence[Module]):
-        self.modules = list(modules)
-        self.mass = sum(m.mass for m in self.modules)
-        self.sensitivity = max(m.sensitivity for m in self.modules)
-        self.length = sum(m.length for m in self.modules)
-        self.children = self.modules
-
-    def init_opt_state(
-        self, key: jax.Array, params: Tuple[Params, ...]
-    ) -> Tuple[OptState, ...]:
-        keys = jax.random.split(key, len(self.modules))
-        return tuple(
-            m.init_opt_state(k, p) for m, k, p in zip(self.modules, keys, params)
-        )
-
-    def init_params(self, key: jax.Array) -> Tuple[Params, ...]:
-        keys = jax.random.split(key, len(self.modules))
-        return tuple(m.init_params(k) for m, k in zip(self.modules, keys))
-
-    def scale_updates(
-        self,
-        opt_state: Tuple[OptState, ...],
-        update: Tuple[Params, ...],
-        target_norm: jax.Array,
-    ) -> Tuple[Tuple[OptState, ...], Tuple[Params, ...]]:
-        scaled_states, scaled_updates = zip(
-            *(
-                m.scale_updates(s, u, target_norm * m.mass / self.mass)
-                for m, s, u in zip(self.modules, opt_state, update)
-            )
-        )
-        return tuple(scaled_states), tuple(scaled_updates)
-
-    def normalize(
-        self,
-        update: Tuple[Params, ...],
-        opt_state: Tuple[OptState, ...],
-    ) -> Tuple[Tuple[Params, ...], Tuple[OptState, ...]]:
-        normalized_updates, normalized_states = zip(
-            *(m.normalize(u, s) for m, u, s in zip(self.modules, update, opt_state))
-        )
-        return tuple(normalized_updates), tuple(normalized_states)
-
-    def regularize(
-        self,
-        params: Tuple[Params, ...],
-        opt_state: Tuple[OptState, ...],
-    ) -> Tuple[Tuple[Params, ...], Tuple[OptState, ...]]:
-        regularized_params, regularized_states = zip(
-            *(m.regularize(p, s) for m, p, s in zip(self.modules, params, opt_state))
-        )
-        return tuple(regularized_params), tuple(regularized_states)
-
-    def __call__(
-        self, rng: jax.Array, params: Tuple[Params, ...], x: X
-    ) -> Tuple[Y, ...]:
-        raise NotImplementedError("ModuleList.__call__ is not implemented")
-
-    def __getitem__(self, idx: int) -> Module:
-        return self.modules[idx]
-
-    def __len__(self):
-        return len(self.modules)
-
-    def __iter__(self):
-        return iter(self.modules)
-
-
-class ModuleDict(Module):
-    def __init__(self, modules: Dict[str, Module]):
-        self.modules = modules
-        self.mass = sum(m.mass for m in self.modules.values())
-        self.sensitivity = max(m.sensitivity for m in self.modules.values())
-        self.length = sum(m.length for m in self.modules.values())
-        self.children = list(self.modules.values())
-
-    def init_opt_state(
-        self, key: jax.Array, params: Dict[str, Params]
-    ) -> Dict[str, OptState]:
-        keys = jax.random.split(key, len(self.modules))
-        return {
-            k: m.init_opt_state(keys[i], params[k])
-            for i, (k, m) in enumerate(self.modules.items())
-        }
-
-    def init_params(self, key: jax.Array) -> Dict[str, Params]:
-        keys = jax.random.split(key, len(self.modules))
-        return {
-            k: m.init_params(keys[i]) for i, (k, m) in enumerate(self.modules.items())
-        }
-
-    def scale_updates(
-        self,
-        opt_state: Dict[str, OptState],
-        update: Dict[str, Params],
-        target_norm: jax.Array,
-    ) -> Tuple[Dict[str, OptState], Dict[str, Params]]:
-        scaled_states, scaled_updates = {}, {}
-        for k, m in self.modules.items():
-            s, u = m.scale_updates(
-                opt_state[k], update[k], target_norm * m.mass / self.mass
-            )
-            scaled_states[k], scaled_updates[k] = s, u
-        return scaled_states, scaled_updates
-
-    def normalize(
-        self,
-        update: Dict[str, Params],
-        opt_state: Dict[str, OptState],
-    ) -> Tuple[Dict[str, Params], Dict[str, OptState]]:
-        normalized_updates, normalized_states = {}, {}
-        for k, m in self.modules.items():
-            u, s = m.normalize(update[k], opt_state[k])
-            normalized_updates[k], normalized_states[k] = u, s
-        return normalized_updates, normalized_states
-
-    def regularize(
-        self,
-        params: Dict[str, Params],
-        opt_state: Dict[str, OptState],
-    ) -> Tuple[Dict[str, Params], Dict[str, OptState]]:
-        regularized_params, regularized_states = {}, {}
-        for k, m in self.modules.items():
-            p, s = m.regularize(params[k], opt_state[k])
-            regularized_params[k], regularized_states[k] = p, s
-        return regularized_params, regularized_states
-
-    def __call__(self, rng: jax.Array, params: Dict[str, Params], x: X) -> Dict[str, Y]:
-        raise NotImplementedError("ModuleDict.__call__ is not implemented")
-
-    def __getitem__(self, key: str) -> Module:
-        return self.modules[key]
-
-    def __setitem__(self, key: str, module: Module):
-        self.modules[key] = module
-        self.mass = sum(m.mass for m in self.modules.values())
-        self.sensitivity = max(m.sensitivity for m in self.modules.values())
-        self.length = sum(m.length for m in self.modules.values())
-        self.children = list(self.modules.values())
-
-    def __delitem__(self, key: str):
-        del self.modules[key]
-        self.mass = sum(m.mass for m in self.modules.values())
-        self.sensitivity = max(m.sensitivity for m in self.modules.values())
-        self.length = sum(m.length for m in self.modules.values())
-        self.children = list(self.modules.values())
-
-    def __len__(self):
-        return len(self.modules)
-
-    def __iter__(self):
-        return iter(self.modules)
-
-    def items(self):
-        return self.modules.items()
-
-    def keys(self):
-        return self.modules.keys()
-
-    def values(self):
-        return self.modules.values()
-
-
 class WrapperModule(Module):
     def __init__(self, inner: Module):
         self.inner = inner
         self.mass = inner.mass
         self.sensitivity = inner.sensitivity
         self.length = inner.length
-        self.children = inner.children
+        self.children = [inner]
 
     def init_opt_state(self, key: jax.Array, params: Params) -> OptState:
         return self.inner.init_opt_state(key, params)
@@ -803,7 +795,7 @@ class WrapperModule(Module):
         self,
         opt_state: OptState,
         update: Params,
-        target_norm: jax.typing.ArrayLike,
+        target_norm: jax.Array,
     ) -> Tuple[OptState, Params]:
         return self.inner.scale_updates(opt_state, update, target_norm)
 
@@ -821,5 +813,20 @@ class WrapperModule(Module):
     ) -> Tuple[Params, OptState]:
         return self.inner.normalize(update, opt_state)
 
-    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y:
+    def __call__(
+        self,
+        rng: jax.Array,
+        params: Params,
+        x: X,
+    ) -> Y:
         return self.inner(rng, params, x)
+
+    def _shard_params(
+        self, params: Params, config: ShardingConfig, mode: ShardingMode
+    ) -> Params:
+        return self.inner._shard_params(params, config, mode)
+
+    def _shard_opt_state(
+        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
+    ) -> OptState:
+        return self.inner._shard_opt_state(opt_state, config, mode)
