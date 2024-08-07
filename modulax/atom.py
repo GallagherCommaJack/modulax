@@ -1,10 +1,12 @@
 import math
-from typing import Literal, Tuple, TypedDict, Union
+from typing import Tuple, Union
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 
-from .abstract import Module
+from .abstract import Module, ShardingConfig, ShardingMode
 
 
 class Conv2D(Module):
@@ -76,6 +78,10 @@ class Conv2D(Module):
         return weight, u
 
 
+LinearState = jax.Array
+LinearParams = jax.Array
+
+
 class Linear(Module):
     def __init__(
         self,
@@ -96,7 +102,7 @@ class Linear(Module):
         self.children = []
         self.eps = eps
 
-    def init_opt_state(self, key: jax.Array, params: jax.Array) -> jax.Array:
+    def init_opt_state(self, key: jax.Array, params: LinearParams) -> LinearState:
         return jax.random.normal(
             key,
             (
@@ -106,13 +112,31 @@ class Linear(Module):
             dtype=jnp.float32,
         )
 
-    def init_params(self, key: jax.Array) -> jax.Array:
+    def _shard_opt_state(
+        self, opt_state: LinearState, config: ShardingConfig, mode: ShardingMode
+    ) -> LinearState:
+        spec = [None, None]
+        if mode == "mp" or mode == "both":
+            spec[1] = config.mp_axis
+        return NamedSharding(config.mesh, P(*spec))
+
+    def init_params(self, key: jax.Array) -> LinearParams:
         w = jax.nn.initializers.orthogonal()(
             key,
             (self.out_features, self.in_features),
             dtype=jnp.float32,
         )
         return w
+
+    def _shard_params(
+        self, params: LinearParams, config: ShardingConfig, mode: ShardingMode
+    ) -> LinearParams:
+        spec = [None, None]
+        if mode == "fsdp" or mode == "both":
+            spec[0] = config.fsdp_axis
+        if mode == "mp" or mode == "both":
+            spec[1] = config.mp_axis
+        return NamedSharding(config.mesh, P(*spec))
 
     def __call__(
         self,
