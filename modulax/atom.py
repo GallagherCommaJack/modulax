@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from .abstract import Module
 
 
-class Conv2D(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
+class Conv2D(Module):
     def __init__(
         self,
         in_channels: int,
@@ -76,11 +76,7 @@ class Conv2D(Module[jax.Array, jax.Array, jax.Array, jax.Array]):
         return weight, u
 
 
-LinearState = jax.Array
-LinearParams = jax.Array
-
-
-class Linear(Module[LinearState, LinearParams, jax.Array, jax.Array]):
+class Linear(Module):
     def __init__(
         self,
         out_features: int,

@@ -1,11 +1,11 @@
 import math
-from typing import Generic, NamedTuple, Optional, Tuple, Union
+from typing import NamedTuple, Optional, Tuple, Union
 
 import einx
 import jax
 import jax.numpy as jnp
 
-from .abstract import Module, X, Y
+from .abstract import Module
 
 
 class FullAttentionInputs(NamedTuple):
@@ -19,7 +19,7 @@ class FullAttentionInputs(NamedTuple):
 AttentionInputs = Union[FullAttentionInputs, Tuple[jax.Array, jax.Array, jax.Array]]
 
 
-class Bond(Module[None, None, X, Y], Generic[X, Y]):
+class Bond(Module[None, None, jax.Array, jax.Array]):
     """A module with no weights."""
 
     def __init__(self):
@@ -45,21 +45,21 @@ class Bond(Module[None, None, X, Y], Generic[X, Y]):
         return x
 
 
-class Identity(Bond[X, X], Generic[X]):
+class Identity(Bond):
     """Identity module."""
 
-    def __call__(self, rng: jax.Array, params: None, x: X) -> X:
+    def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
         return x
 
 
-class Flatten(Bond[jax.Array, jax.Array]):
+class Flatten(Bond):
     """Flatten all non-batch dimensions."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
         return einx.rearrange("b ... -> b (...)", x)
 
 
-class AddHeads(Bond[jax.Array, jax.Array]):
+class AddHeads(Bond):
     """Reshapes an input to have heads."""
 
     def __init__(self, num_heads: int):
@@ -70,21 +70,21 @@ class AddHeads(Bond[jax.Array, jax.Array]):
         return einx.rearrange("b t (h d) -> b h t d", x, h=self.num_heads)
 
 
-class RemoveHeads(Bond[jax.Array, jax.Array]):
+class RemoveHeads(Bond):
     """Inverse of AddHeads."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
         return einx.rearrange("b h t d -> b t (h d)", x)
 
 
-class Abs(Bond[jax.Array, jax.Array]):
+class Abs(Bond):
     """Absolute value nonlinearity."""
 
     def __call__(self, rng: jax.Array, params: None, x: jax.Array) -> jax.Array:
         return jnp.abs(x)
 
 
-class ReLU(Bond[jax.Array, jax.Array]):
+class ReLU(Bond):
     """ReLU nonlinearity."""
 
     def __init__(self):
@@ -95,12 +95,12 @@ class ReLU(Bond[jax.Array, jax.Array]):
         return jax.nn.relu(x)
 
 
-def ScaledReLU() -> Bond[jax.Array, jax.Array]:
+def ScaledReLU() -> Bond:
     """ReLU scaled to have sensitivity one."""
     return math.sqrt(2) * ReLU()
 
 
-class GELU(Bond[jax.Array, jax.Array]):
+class GELU(Bond):
     """GELU nonlinearity."""
 
     def __init__(self):
@@ -111,12 +111,12 @@ class GELU(Bond[jax.Array, jax.Array]):
         return jax.nn.gelu(x)
 
 
-def ScaledGELU() -> Bond[jax.Array, jax.Array]:
+def ScaledGELU() -> Bond:
     """GELU scaled to have sensitivity 1."""
     return math.sqrt(2) * GELU()
 
 
-class MeanSubtract(Bond[jax.Array, jax.Array]):
+class MeanSubtract(Bond):
     """Mean subtraction."""
 
     def __init__(self, axis: int = -1):
@@ -127,7 +127,7 @@ class MeanSubtract(Bond[jax.Array, jax.Array]):
         return x - jnp.mean(x, axis=self.axis, keepdims=True)
 
 
-class RMSDivide(Bond[jax.Array, jax.Array]):
+class RMSDivide(Bond):
     """Normalize to have unit RMS norm."""
 
     def __init__(self, axis: int = -1):
@@ -138,12 +138,12 @@ class RMSDivide(Bond[jax.Array, jax.Array]):
         return x / jnp.sqrt(jnp.mean(jnp.square(x), axis=self.axis, keepdims=True))
 
 
-def LayerNorm(axis: int = -1) -> Bond[jax.Array, jax.Array]:
+def LayerNorm(axis: int = -1) -> Bond:
     """Mean subtraction followed by RMS normalization."""
     return RMSDivide(axis) @ MeanSubtract(axis)
 
 
-class Mean(Bond[jax.Array, jax.Array]):
+class Mean(Bond):
     """Take the mean over a specified dimension."""
 
     def __init__(self, axis: int):
@@ -154,7 +154,7 @@ class Mean(Bond[jax.Array, jax.Array]):
         return jnp.mean(x, axis=self.axis)
 
 
-class AvgPool(Bond[jax.Array, jax.Array]):
+class AvgPool(Bond):
     """Average pooling that adapts to different input sizes."""
 
     def __init__(self, output_size: Tuple[int, int] = (1, 1)):
@@ -165,7 +165,7 @@ class AvgPool(Bond[jax.Array, jax.Array]):
         return jax.image.resize(x, x.shape[:2] + self.output_size, method="average")
 
 
-class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
+class FunctionalAttention(Bond):
     """The part of attention that doesn't involve weights."""
 
     def __init__(self, causal: bool = False):
@@ -209,7 +209,7 @@ class FunctionalAttention(Bond[AttentionInputs, jax.Array]):
         return einx.dot("b h q k,b h k d->b h q d", attn_weights, v)
 
 
-class FourierFeatures(Bond[jax.Array, Tuple[jax.Array, jax.Array]]):
+class FourierFeatures(Bond):
     def __init__(self, d_out: int, min_wavelength: float, max_wavelength: float):
         assert min_wavelength > 0, f"{min_wavelength=} must be positive"
         assert max_wavelength > 0, f"{max_wavelength=} must be positive"
@@ -246,7 +246,7 @@ def rotate_half(x: jax.Array) -> jax.Array:
     return x
 
 
-class RotaryPositionEmbedding(Bond[Tuple[jax.Array, jax.Array], jax.Array]):
+class RotaryPositionEmbedding(Bond):
     def __init__(
         self,
         min_wavelength: float,
@@ -286,7 +286,7 @@ class RotaryPositionEmbedding(Bond[Tuple[jax.Array, jax.Array], jax.Array]):
         return jnp.concatenate([embs_left, embs_right], axis=-1)
 
 
-class Tuplefy(Bond[jax.Array, Tuple[jax.Array, ...]]):
+class Tuplefy(Bond):
     def __init__(self, axis: int = 0):
         super().__init__()
         self.axis: int = axis
