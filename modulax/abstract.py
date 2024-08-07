@@ -114,30 +114,16 @@ class Module(ABC):
 
     def __matmul__(self, other):
         if isinstance(other, tuple):
-            if len(other) == 2:
-                other = TupleModule(*other)
-            elif len(other) == 3:
-                other = TripleModule(*other)
-            elif len(other) == 4:
-                other = QuadrupleModule(*other)
-            else:
-                raise ValueError(
-                    f"cannot multiply a module by a tuple of length {len(other)}"
-                )
+            other = TupleModule(*other)
+        elif isinstance(other, dict):
+            other = DictModule(other)
         return CompositeModule(other, self)
 
     def __rmatmul__(self, other):
         if isinstance(other, tuple):
-            if len(other) == 2:
-                other = TupleModule(*other)
-            elif len(other) == 3:
-                other = TripleModule(*other)
-            elif len(other) == 4:
-                other = QuadrupleModule(*other)
-            else:
-                raise ValueError(
-                    f"cannot multiply a module by a tuple of length {len(other)}"
-                )
+            other = TupleModule(*other)
+        elif isinstance(other, dict):
+            other = DictModule(other)
         return CompositeModule(self, other)
 
     def __add__(self, other: Union[int, float, "Module"]):
@@ -310,6 +296,95 @@ class TupleModule(Module):
     ):
         keys = jax.random.split(rng, len(self.children))
         return tuple(child(k, p, x) for child, k, p in zip(self.children, keys, params))
+
+
+class DictModule(Module):
+    def __init__(self, modules: Dict[str, Module]):
+        self.modules = modules
+        self.mass = sum(m.mass for m in self.modules.values())
+        self.sensitivity = max(m.sensitivity for m in self.modules.values())
+        self.length = sum(m.length for m in self.modules.values())
+        self.children = list(self.modules.values())
+
+    def init_opt_state(
+        self, key: jax.Array, params: Dict[str, Params]
+    ) -> Dict[str, OptState]:
+        keys = jax.random.split(key, len(self.modules))
+        return {
+            k: m.init_opt_state(keys[i], params[k])
+            for i, (k, m) in enumerate(self.modules.items())
+        }
+
+    def init_params(self, key: jax.Array) -> Dict[str, Params]:
+        keys = jax.random.split(key, len(self.modules))
+        return {
+            k: m.init_params(keys[i]) for i, (k, m) in enumerate(self.modules.items())
+        }
+
+    def scale_updates(
+        self,
+        opt_state: Dict[str, OptState],
+        update: Dict[str, Params],
+        target_norm: jax.Array,
+    ) -> Tuple[Dict[str, OptState], Dict[str, Params]]:
+        scaled_states, scaled_updates = {}, {}
+        for k, m in self.modules.items():
+            s, u = m.scale_updates(
+                opt_state[k], update[k], target_norm * m.mass / self.mass
+            )
+            scaled_states[k], scaled_updates[k] = s, u
+        return scaled_states, scaled_updates
+
+    def normalize(
+        self,
+        update: Dict[str, Params],
+        opt_state: Dict[str, OptState],
+    ) -> Tuple[Dict[str, Params], Dict[str, OptState]]:
+        normalized_updates, normalized_states = {}, {}
+        for k, m in self.modules.items():
+            u, s = m.normalize(update[k], opt_state[k])
+            normalized_updates[k], normalized_states[k] = u, s
+        return normalized_updates, normalized_states
+
+    def regularize(
+        self,
+        params: Dict[str, Params],
+        opt_state: Dict[str, OptState],
+    ) -> Tuple[Dict[str, Params], Dict[str, OptState]]:
+        regularized_params, regularized_states = {}, {}
+        for k, m in self.modules.items():
+            p, s = m.regularize(params[k], opt_state[k])
+            regularized_params[k], regularized_states[k] = p, s
+        return regularized_params, regularized_states
+
+    def __call__(
+        self,
+        rng: jax.Array,
+        params: Dict[str, Params],
+        x: X,
+    ) -> Dict[str, Y]:
+        keys = jax.random.split(rng, len(self.modules))
+        return {
+            k: m(keys[i], params[k], x) for i, (k, m) in enumerate(self.modules.items())
+        }
+
+    def __getitem__(self, key: str) -> Module:
+        return self.modules[key]
+
+    def __len__(self):
+        return len(self.modules)
+
+    def __iter__(self):
+        return iter(self.modules)
+
+    def items(self):
+        return self.modules.items()
+
+    def keys(self):
+        return self.modules.keys()
+
+    def values(self):
+        return self.modules.values()
 
 
 class Sum(Module):
