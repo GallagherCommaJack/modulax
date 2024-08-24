@@ -92,48 +92,6 @@ class Module(ABC):
     def init_opt_state(self, key: jax.Array, params: Params) -> OptState:
         return None
 
-    def shard_params(
-        self,
-        params: Params,
-        *,
-        config: Optional[ShardingConfig] = None,
-        mode: Optional[ShardingMode] = None,
-    ) -> Params:
-        if mode is None:
-            mode = get_sharding_mode()
-        if config is None:
-            config = get_sharding_config()
-        return self._shard_params(params, config, mode)
-
-    def _shard_params(
-        self, params: Params, config: ShardingConfig, mode: ShardingMode
-    ) -> Params:
-        return jax.tree.map(
-            lambda _: NamedSharding(config.mesh, PartitionSpec()),
-            params,
-        )
-
-    def shard_opt_state(
-        self,
-        opt_state: OptState,
-        *,
-        config: Optional[ShardingConfig] = None,
-        mode: Optional[ShardingMode] = None,
-    ) -> OptState:
-        if mode is None:
-            mode = get_sharding_mode()
-        if config is None:
-            config = get_sharding_config()
-        return self._shard_opt_state(opt_state, config, mode)
-
-    def _shard_opt_state(
-        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
-    ) -> OptState:
-        return jax.tree.map(
-            lambda _: NamedSharding(config.mesh, PartitionSpec()),
-            opt_state,
-        )
-
     def scale_updates(
         self,
         opt_state: OptState,
@@ -199,11 +157,6 @@ class Module(ABC):
         )
         return opt_state, params
 
-    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y:
-        raise NotImplementedError(
-            f"__call__ not implemented for {self.__class__.__name__}"
-        )
-
     def tare(self, absolute=1, relative=None):
         if relative is not None:
             self.mass *= relative
@@ -211,6 +164,53 @@ class Module(ABC):
                 child.tare(relative=relative)
         else:
             self.tare(relative=absolute / self.mass)
+
+    def shard_params(
+        self,
+        params: Params,
+        *,
+        config: Optional[ShardingConfig] = None,
+        mode: Optional[ShardingMode] = None,
+    ) -> Params:
+        if mode is None:
+            mode = get_sharding_mode()
+        if config is None:
+            config = get_sharding_config()
+        return self._shard_params(params, config, mode)
+
+    def _shard_params(
+        self, params: Params, config: ShardingConfig, mode: ShardingMode
+    ) -> Params:
+        return jax.tree.map(
+            lambda _: NamedSharding(config.mesh, PartitionSpec()),
+            params,
+        )
+
+    def shard_opt_state(
+        self,
+        opt_state: OptState,
+        *,
+        config: Optional[ShardingConfig] = None,
+        mode: Optional[ShardingMode] = None,
+    ) -> OptState:
+        if mode is None:
+            mode = get_sharding_mode()
+        if config is None:
+            config = get_sharding_config()
+        return self._shard_opt_state(opt_state, config, mode)
+
+    def _shard_opt_state(
+        self, opt_state: OptState, config: ShardingConfig, mode: ShardingMode
+    ) -> OptState:
+        return jax.tree.map(
+            lambda _: NamedSharding(config.mesh, PartitionSpec()),
+            opt_state,
+        )
+
+    def __call__(self, rng: jax.Array, params: Params, x: X) -> Y:
+        raise NotImplementedError(
+            f"__call__ not implemented for {self.__class__.__name__}"
+        )
 
     def __matmul__(self, other):
         if isinstance(other, tuple):
